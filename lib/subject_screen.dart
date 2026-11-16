@@ -1,8 +1,13 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:dio/dio.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
 
 class SubjectScreen extends StatefulWidget {
   final Map<String, dynamic> subject;
@@ -23,6 +28,9 @@ class _SubjectScreenState extends State<SubjectScreen> {
   List<dynamic> _questions = [];
   List<dynamic> _materials = [];
   Set<int> _wrongQuestionIds = {};
+  Map<int, String> _downloadedFiles = {};
+  Set<int> _downloadingIds = {};
+
   int _totalAnswered = 0;
   int _correctAnswered = 0;
 
@@ -61,6 +69,8 @@ class _SubjectScreenState extends State<SubjectScreen> {
       _isLoading = false;
     });
 
+    await _checkDownloadedFiles();
+
     try {
       final client = Supabase.instance.client;
       final qData = await client.from('questions').select().eq('subject_id', _subjectId).order('id');
@@ -74,7 +84,82 @@ class _SubjectScreenState extends State<SubjectScreen> {
         _questions = qData;
         _materials = mData;
       });
+      await _checkDownloadedFiles();
     } catch (_) {}
+  }
+
+  Future<void> _checkDownloadedFiles() async {
+    if (kIsWeb) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final Map<int, String> found = {};
+      for (var m in _materials) {
+        final id = m['id'];
+        final path = '${dir.path}/iq_mat_$id.pdf';
+        if (await File(path).exists()) {
+          found[id] = path;
+        }
+      }
+      if (mounted) {
+        setState(() => _downloadedFiles = found);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _handleMaterialTap(Map<String, dynamic> m) async {
+    final int id = m['id'];
+    final String type = (m['file_type'] ?? 'PDF').toString().toUpperCase();
+    final String rawUrl = (m['file_url'] ?? '').toString().trim();
+
+    if (rawUrl.isEmpty) return;
+
+    // 1. إذا كان فيديو أو صوت، يفتح مباشرة في تليجرام أو يوتيوب
+    if (type.contains('VIDEO') || type.contains('AUDIO') || kIsWeb) {
+      final uri = Uri.tryParse(rawUrl);
+      if (uri != null) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+      return;
+    }
+
+    // 2. إذا كان ملف PDF: إذا كان محملاً مسبقاً يُفتح أوفلاين فوراً
+    if (_downloadedFiles.containsKey(id)) {
+      await OpenFilex.open(_downloadedFiles[id]!);
+      return;
+    }
+
+    // 3. تحميل ملف PDF وحفظه في ذاكرة التطبيق للعمل بدون إنترنت لاحقاً
+    if (_downloadingIds.contains(id)) return;
+    setState(() => _downloadingIds.add(id));
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final savePath = '${dir.path}/iq_mat_$id.pdf';
+      await Dio().download(rawUrl, savePath);
+
+      if (!mounted) return;
+      setState(() {
+        _downloadingIds.remove(id);
+        _downloadedFiles[id] = savePath;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم حفظ الملف في جهازك (يعمل الآن بدون إنترنت)'), backgroundColor: Colors.teal),
+      );
+      await OpenFilex.open(savePath);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _downloadingIds.remove(id));
+      // في حال تعذر التحميل الداخلي (مثل روابط Drive غير المباشرة) يفتح في المتصفح
+      final uri = Uri.tryParse(rawUrl);
+      if (uri != null) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذر تحميل الملف، تأكد من اتصال الإنترنت'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   Future<void> _recordAnswer(int questionId, bool isCorrect) async {
@@ -166,31 +251,41 @@ class _SubjectScreenState extends State<SubjectScreen> {
       itemCount: _materials.length,
       itemBuilder: (context, index) {
         final m = _materials[index];
+        final int id = m['id'];
         final type = (m['file_type'] ?? 'PDF').toString().toUpperCase();
+        final bool isPdf = !type.contains('AUDIO') && !type.contains('VIDEO');
+        final bool isSavedOffline = _downloadedFiles.containsKey(id);
+        final bool isDownloading = _downloadingIds.contains(id);
+
         IconData icon = Icons.picture_as_pdf_rounded;
-        if (type.contains('AUDIO') || type.contains('MP3')) icon = Icons.headphones_rounded;
-        if (type.contains('VIDEO') || type.contains('LINK')) icon = Icons.play_circle_fill_rounded;
+        if (type.contains('AUDIO')) icon = Icons.headphones_rounded;
+        if (type.contains('VIDEO')) icon = Icons.play_circle_fill_rounded;
 
         return Card(
           color: const Color(0xFF181B20),
           margin: const EdgeInsets.only(bottom: 12),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           child: ListTile(
+            onTap: () => _handleMaterialTap(m),
             leading: CircleAvatar(
               backgroundColor: _themeColor.withOpacity(0.2),
               child: Icon(icon, color: _themeColor),
             ),
             title: Text(m['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text('المحاضرة ${m['lecture_number']}  •  النوع: $type', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-            trailing: IconButton(
-              icon: const Icon(Icons.download_rounded, color: Color(0xFF4FD1C5)),
-              onPressed: () async {
-                final url = Uri.tryParse(m['file_url'] ?? '');
-                if (url != null) {
-                  await launchUrl(url, mode: LaunchMode.externalApplication);
-                }
-              },
+            subtitle: Text(
+              isPdf
+                  ? 'المحاضرة ${m['lecture_number']}  •  ${isSavedOffline ? "محفوظ أوفلاين ✅" : "PDF (اضغط للتحميل والحفظ)"}'
+                  : 'المحاضرة ${m['lecture_number']}  •  رابط $type خارجي',
+              style: TextStyle(fontSize: 12, color: isSavedOffline ? Colors.greenAccent : Colors.grey),
             ),
+            trailing: isDownloading
+                ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(
+                    isPdf
+                        ? (isSavedOffline ? Icons.offline_pin_rounded : Icons.download_rounded)
+                        : Icons.open_in_new_rounded,
+                    color: isSavedOffline ? Colors.greenAccent : const Color(0xFF4FD1C5),
+                  ),
           ),
         );
       },
