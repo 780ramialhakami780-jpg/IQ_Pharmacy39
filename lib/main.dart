@@ -252,3 +252,66 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
   Widget _buildConfirmationStep() {
     return Container(
       padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: const Color(0xFF181B20),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.verified_user_rounded, size: 64, color: Color(0xFF4FD1C5)),
+          const SizedBox(height: 16),
+          const Text('مرحباً بك', style: TextStyle(fontSize: 16, color: Colors.grey)),
+          const SizedBox(height: 8),
+          Text(_foundStudent!['full_name'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+          const SizedBox(height: 8),
+          Text('رقم القيد: ${_foundStudent!['student_id']}', style: const TextStyle(fontSize: 14, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 20),
+          const Text(
+            'تنبيه: عند الضغط على "متابعة للتطبيق" سيتم ربط رقم قيدك بهذا الهاتف نهائياً ولن يتمكن أي شخص آخر من استخدامه.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: Colors.amberAccent, height: 1.4),
+          ),
+          const SizedBox(height: 28),
+          SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: ElevatedButton(
+              onPressed: _isLoading ? null : _confirmAndLockAccount,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4FD1C5),
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: _isLoading
+                  ? const CircularProgressIndicator(color: Colors.black)
+                  : const Text('متابعة للتطبيق', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: OutlinedButton(
+              onPressed: _isLoading
+                  ? null
+                  : () {
+                      setState(() {
+                        _foundStudent = null;
+                        _idController.clear();
+                        _errorMessage = null;
+                      });
+                    },
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.redAccent,
+                side: const BorderSide(color: Colors.redAccent),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('لست أنا', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
