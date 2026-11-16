@@ -2,8 +2,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'subject_screen.dart';
+import 'admin_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -34,7 +35,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _syncWithCloud(silent: true);
   }
 
-  // تحميل البيانات المحفوظة محلياً للعمل بدون إنترنت فوراً
   Future<void> _loadLocalData() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -49,7 +49,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // مزامنة البيانات من السحابة وحفظها في الهاتف
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     setState(() => _isSyncing = true);
@@ -61,7 +60,17 @@ class _HomeScreenState extends State<HomeScreen> {
       final assignmentsData = await client.from('assignments').select().order('due_date');
       final notificationsData = await client.from('notifications').select().order('created_at', ascending: false);
 
+      // تحديث حالة الصلاحية من السحابة أيضاً
+      bool cloudAdmin = _isAdmin;
+      if (_studentId.isNotEmpty) {
+        final me = await client.from('students').select('is_admin').eq('student_id', _studentId).maybeSingle();
+        if (me != null) {
+          cloudAdmin = me['is_admin'] ?? false;
+        }
+      }
+
       final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_admin', cloudAdmin);
       await prefs.setString('cache_subjects', jsonEncode(subjectsData));
       await prefs.setString('cache_schedule', jsonEncode(scheduleData));
       await prefs.setString('cache_assignments', jsonEncode(assignmentsData));
@@ -69,6 +78,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (!mounted) return;
       setState(() {
+        _isAdmin = cloudAdmin;
         _subjects = subjectsData;
         _schedule = scheduleData;
         _assignments = assignmentsData;
@@ -116,14 +126,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // 1. تبويب الشاشة الرئيسية
   Widget _buildDashboardTab() {
     return RefreshIndicator(
       onRefresh: () => _syncWithCloud(silent: false),
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // الشريط العلوي: الترحيب + الأزرار الستة
           Row(
             children: [
               Expanded(
@@ -140,17 +148,26 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
+              if (_isAdmin)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.amber),
+                  ),
+                  child: const Text('مندوب / مشرف', style: TextStyle(color: Colors.amber, fontSize: 11, fontWeight: FontWeight.bold)),
+                ),
             ],
           ),
           const SizedBox(height: 12),
-          // صف الأزرار العلوية (البحث العام، الإشعارات، QR، المزامنة، الدردشة، الإعدادات)
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
+                _topActionBtn(Icons.qr_code_2_rounded, 'كودي (QR)', () => _showMyStudentQR()),
                 _topActionBtn(Icons.search_rounded, 'بحث', () => _openGlobalSearch()),
                 _topActionBtn(Icons.notifications_active_rounded, 'الإشعارات', () => _openNotifications(), badge: _notifications.length),
-                _topActionBtn(Icons.qr_code_scanner_rounded, 'تحضير', () => _openQRScanner()),
                 _topActionBtn(
                   _isSyncing ? Icons.hourglass_top_rounded : Icons.sync_rounded,
                   'مزامنة',
@@ -163,7 +180,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 18),
 
-          // شريط الأخبار والتحديثات
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -194,7 +210,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 14),
 
-          // ملخص الجدول السريع
           InkWell(
             onTap: () => setState(() => _currentIndex = 1),
             borderRadius: BorderRadius.circular(14),
@@ -228,7 +243,6 @@ class _HomeScreenState extends State<HomeScreen> {
           const Text('المواد الدراسية', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 12),
 
-          // قائمة المواد
           if (_subjects.isEmpty)
             const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('اسحب للأسفل لمزامنة المواد لأول مرة')))
           else
@@ -303,7 +317,60 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // 2. تبويب جدول المحاضرات
+  // عرض بطاقة كود QR الخاص بالطالب للتحضير (يعمل أوفلاين 100%)
+  void _showMyStudentQR() {
+    final qrPayload = jsonEncode({
+      'id': _studentId,
+      'name': _studentName,
+    });
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF181B20),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('بطاقة التحضير الذكية', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: QrImageView(
+                data: qrPayload,
+                version: QrVersions.auto,
+                size: 210.0,
+                backgroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(_studentName, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+            const SizedBox(height: 4),
+            Text('رقم القيد: $_studentId', style: const TextStyle(fontSize: 14, color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            const Text(
+              'أبرز هذا الكود للمندوب ليتم مسحه وتسجيل حضورك (يعمل بدون إنترنت)',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          Center(
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+              onPressed: () => Navigator.pop(context),
+              child: const Text('إغلاق', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildScheduleTab() {
     final selectedDay = _days[_selectedDayIndex];
     final dayLectures = _schedule.where((item) => item['day_name'] == selectedDay).toList();
@@ -376,7 +443,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // 3. تبويب التكاليف
   Widget _buildAssignmentsTab() {
     return Column(
       children: [
@@ -414,7 +480,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // نافذة البحث العام الشامل
   void _openGlobalSearch() {
     showSearch(
       context: context,
@@ -427,7 +492,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // نافذة الإشعارات
   void _openNotifications() {
     showModalBottomSheet(
       context: context,
@@ -477,46 +541,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ماسح QR للتحضير في المحاضرات
-  void _openQRScanner() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: const Text('ماسح كود التحضير')),
-          body: MobileScanner(
-            onDetect: (capture) async {
-              final barcodes = capture.barcodes;
-              if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
-                final code = barcodes.first.rawValue!;
-                Navigator.pop(context);
-                try {
-                  await Supabase.instance.client.from('attendance').insert({
-                    'student_id': _studentId,
-                    'full_name': _studentName,
-                    'session_code': code,
-                  });
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('تم تسجيل حضورك بنجاح ($_studentName)'), backgroundColor: Colors.green),
-                    );
-                  }
-                } catch (_) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('تعذر إرسال التحضير، تأكد من اتصال الإنترنت'), backgroundColor: Colors.red),
-                    );
-                  }
-                }
-              }
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  // دردشة الدفعة
   void _openBatchChat() {
     Navigator.push(
       context,
@@ -526,7 +550,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // الإعدادات العامة (وتحتوي على مدخل لوحة الإدارة السرية)
   void _openGeneralSettings() {
     Navigator.push(
       context,
@@ -553,7 +576,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ListTile(
                 leading: const Icon(Icons.admin_panel_settings, color: Colors.amber),
                 title: const Text('لوحة إدارة الدفعة (للمشرفين فقط)'),
-                subtitle: const Text('إرسال إشعارات، إضافة أسئلة، تعديل الجدول'),
+                subtitle: const Text('إرسال إشعارات، رفع ملفات، تحضير QR، تعديل الجدول'),
                 onTap: () => _promptAdminPassword(),
               ),
             ],
@@ -563,34 +586,54 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _promptAdminPassword() {
+  // التحقق الصارم بالرمز السري الخاص بالمشرفين فقط
+  Future<void> _promptAdminPassword() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedPin = prefs.getString('admin_pin') ?? '3939'; // الرمز الافتراضي 3939 ويمكن تغييره من اللوحة
     final passCtrl = TextEditingController();
+
+    if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('رمز دخول المشرفين'),
-        content: TextField(
-          controller: passCtrl,
-          obscureText: true,
-          decoration: const InputDecoration(hintText: 'أدخل الرمز السري للإدارة'),
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: const Color(0xFF181B20),
+        title: const Text('رمز دخول المشرفين السري'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('أدخل الرمز السري المخصص لمندوبي الدفعة:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: passCtrl,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 20, letterSpacing: 4),
+              decoration: const InputDecoration(
+                hintText: '••••',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('إلغاء')),
+          TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('إلغاء')),
           ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
             onPressed: () {
-              // الرمز الافتراضي هو 3939 ويمكنك تغييره في المرحلة الرابعة
-              if (passCtrl.text == '3939' || _isAdmin) {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('مرحباً أيها المشرف! سنضيف لوحة التحكم الكاملة في المرحلة الرابعة')),
+              if (passCtrl.text.trim() == savedPin) {
+                Navigator.pop(dialogCtx);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => AdminScreen(adminName: _studentName)),
                 );
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('الرمز السري غير صحيح'), backgroundColor: Colors.red),
+                  const SnackBar(content: Text('الرمز السري غير صحيح! الوصول مرفوض.'), backgroundColor: Colors.red),
                 );
               }
             },
-            child: const Text('دخول'),
+            child: const Text('دخول للوحة', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -598,7 +641,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// محرك البحث العام الشامل
 class AppGlobalSearchDelegate extends SearchDelegate {
   final List<dynamic> subjects;
   final List<dynamic> schedule;
@@ -671,7 +713,6 @@ class AppGlobalSearchDelegate extends SearchDelegate {
   }
 }
 
-// شاشة دردشة الدفعة
 class BatchChatScreen extends StatefulWidget {
   final String studentId;
   final String defaultName;
@@ -797,6 +838,641 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
                   onPressed: _sendMessage,
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+
+class AdminScreen extends StatefulWidget {
+  final String adminName;
+  const AdminScreen({super.key, required this.adminName});
+
+  @override
+  State<AdminScreen> createState() => _AdminScreenState();
+}
+
+class _AdminScreenState extends State<AdminScreen> {
+  final _client = Supabase.instance.client;
+  List<dynamic> _subjects = [];
+  List<dynamic> _attendance = [];
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchInitialData();
+  }
+
+  Future<void> _fetchInitialData() async {
+    try {
+      final subjs = await _client.from('subjects').select().order('sort_order');
+      final att = await _client.from('attendance').select().order('created_at', ascending: false).limit(50);
+      if (!mounted) return;
+      setState(() {
+        _subjects = subjs;
+        _attendance = att;
+      });
+    } catch (_) {}
+  }
+
+  void _showMsg(String text, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(text), backgroundColor: isError ? Colors.redAccent : Colors.teal),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 5,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('لوحة إدارة الدفعة السرية'),
+          backgroundColor: const Color(0xFF1E293B),
+          bottom: const TabBar(
+            isScrollable: true,
+            indicatorColor: Color(0xFF4FD1C5),
+            tabs: [
+              Tab(text: 'إشعارات وتكاليف'),
+              Tab(text: 'المواد والملفات'),
+              Tab(text: 'بنك الأسئلة'),
+              Tab(text: 'الجدول والحضور'),
+              Tab(text: 'الرمز السري'),
+            ],
+          ),
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+                children: [
+                  _buildNotificationsAndTasksTab(),
+                  _buildSubjectsAndFilesTab(),
+                  _buildAddQuestionTab(),
+                  _buildScheduleAndAttendanceTab(),
+                  _buildChangePinTab(),
+                ],
+              ),
+      ),
+    );
+  }
+
+  // 1. تبويب إرسال إشعار + إضافة تكليف
+  Widget _buildNotificationsAndTasksTab() {
+    final notifTitle = TextEditingController();
+    final notifBody = TextEditingController();
+
+    final taskSubj = TextEditingController();
+    final taskTitle = TextEditingController();
+    final taskDetails = TextEditingController();
+    final taskDate = TextEditingController(text: '2026-11-25');
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text('📢 إرسال إشعار عاجل للدفعة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+        const SizedBox(height: 10),
+        TextField(controller: notifTitle, decoration: const InputDecoration(labelText: 'عنوان الإشعار', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        TextField(controller: notifBody, maxLines: 3, decoration: const InputDecoration(labelText: 'نص الإشعار', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.send),
+          label: const Text('نشر الإشعار الآن'),
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+          onPressed: () async {
+            if (notifTitle.text.trim().isEmpty || notifBody.text.trim().isEmpty) return;
+            setState(() => _isLoading = true);
+            try {
+              await _client.from('notifications').insert({
+                'title': notifTitle.text.trim(),
+                'body': notifBody.text.trim(),
+                'sender_name': widget.adminName,
+              });
+              _showMsg('تم إرسال الإشعار لجميع الطلاب بنجاح');
+            } catch (e) {
+              _showMsg('فشل الإرسال، تأكد من الإنترنت', isError: true);
+            } finally {
+              if (mounted) setState(() => _isLoading = false);
+            }
+          },
+        ),
+        const Divider(height: 36),
+        const Text('📌 إضافة تكليف / واجب جديد', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+        const SizedBox(height: 10),
+        TextField(controller: taskSubj, decoration: const InputDecoration(labelText: 'اسم المادة', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        TextField(controller: taskTitle, decoration: const InputDecoration(labelText: 'عنوان التكليف', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        TextField(controller: taskDetails, decoration: const InputDecoration(labelText: 'التفاصيل المطلوبة', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        TextField(controller: taskDate, decoration: const InputDecoration(labelText: 'موعد التسليم (YYYY-MM-DD)', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.add_task),
+          label: const Text('حفظ التكليف'),
+          onPressed: () async {
+            if (taskTitle.text.trim().isEmpty) return;
+            setState(() => _isLoading = true);
+            try {
+              await _client.from('assignments').insert({
+                'subject_name': taskSubj.text.trim(),
+                'title': taskTitle.text.trim(),
+                'details': taskDetails.text.trim(),
+                'due_date': taskDate.text.trim(),
+              });
+              _showMsg('تمت إضافة التكليف بنجاح');
+            } catch (_) {
+              _showMsg('حدث خطأ أثناء الحفظ', isError: true);
+            } finally {
+              if (mounted) setState(() => _isLoading = false);
+            }
+          },
+        ),
+      ],
+    );
+  }
+
+  // 2. تبويب إضافة مادة + رفع PDF مباشرة أو إضافة رابط فيديو/صوت
+  Widget _buildSubjectsAndFilesTab() {
+    final subjName = TextEditingController();
+    final subjDesc = TextEditingController();
+
+    int? selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
+    final lecNum = TextEditingController(text: '1');
+    final fileTitle = TextEditingController();
+    String selectedType = 'PDF';
+    final fileUrl = TextEditingController();
+    PlatformFile? pickedPdfFile;
+
+    return StatefulBuilder(
+      builder: (context, setInnerState) => ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text('📚 إضافة مادة دراسية جديدة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 10),
+          TextField(controller: subjName, decoration: const InputDecoration(labelText: 'اسم المادة (مثلاً: Pharmacology)', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          TextField(controller: subjDesc, decoration: const InputDecoration(labelText: 'وصف مختصر أو اسم الدكتور', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          ElevatedButton(
+            onPressed: () async {
+              if (subjName.text.trim().isEmpty) return;
+              setState(() => _isLoading = true);
+              try {
+                await _client.from('subjects').insert({
+                  'name': subjName.text.trim(),
+                  'subtitle': subjDesc.text.trim(),
+                  'color_hex': '#2B6CB0',
+                  'sort_order': _subjects.length + 1,
+                });
+                await _fetchInitialData();
+                _showMsg('تمت إضافة المادة بنجاح');
+              } catch (_) {
+                _showMsg('تعذر إضافة المادة', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+            child: const Text('إضافة المادة'),
+          ),
+          const Divider(height: 36),
+          const Text('📁 إضافة ملف PDF أو رابط محاضرة لمادة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+          const SizedBox(height: 10),
+          if (_subjects.isNotEmpty)
+            DropdownButtonFormField<int>(
+              value: selectedSubjId,
+              decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
+              items: _subjects.map<DropdownMenuItem<int>>((s) => DropdownMenuItem(value: s['id'], child: Text(s['name']))).toList(),
+              onChanged: (val) => setInnerState(() => selectedSubjId = val),
+            ),
+          const SizedBox(height: 10),
+          TextField(controller: lecNum, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رقم المحاضرة', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          TextField(controller: fileTitle, decoration: const InputDecoration(labelText: 'عنوان الملخص أو المحاضرة', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            value: selectedType,
+            decoration: const InputDecoration(labelText: 'نوع المحتوى', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'PDF', child: Text('ملف ملخص / محاضرة (PDF يُحفظ أوفلاين)')),
+              DropdownMenuItem(value: 'VIDEO', child: Text('رابط فيديو (يوتيوب / تيليجرام)')),
+              DropdownMenuItem(value: 'AUDIO', child: Text('رابط تسجيل صوتي (تيليجرام)')),
+            ],
+            onChanged: (val) => setInnerState(() {
+              selectedType = val ?? 'PDF';
+              pickedPdfFile = null;
+              fileUrl.clear();
+            }),
+          ),
+          const SizedBox(height: 12),
+
+          if (selectedType == 'PDF') ...[
+            OutlinedButton.icon(
+              icon: const Icon(Icons.upload_file_rounded, color: Color(0xFF4FD1C5)),
+              label: Text(
+                pickedPdfFile == null ? 'اختر ملف PDF من الهاتف' : 'تم اختيار: ${pickedPdfFile!.name}',
+                style: const TextStyle(color: Colors.white),
+              ),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                side: const BorderSide(color: Color(0xFF4FD1C5)),
+              ),
+              onPressed: () async {
+                final result = await FilePicker.platform.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: ['pdf'],
+                  withData: true,
+                );
+                if (result != null && result.files.isNotEmpty) {
+                  setInnerState(() => pickedPdfFile = result.files.first);
+                }
+              },
+            ),
+          ] else ...[
+            TextField(
+              controller: fileUrl,
+              decoration: const InputDecoration(
+                labelText: 'الصق رابط التليجرام أو اليوتيوب هنا',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 14),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.cloud_upload_rounded),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF4FD1C5),
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+            onPressed: () async {
+              if (selectedSubjId == null || fileTitle.text.trim().isEmpty) {
+                _showMsg('يرجى اختيار المادة وكتابة العنوان', isError: true);
+                return;
+              }
+
+              setState(() => _isLoading = true);
+              try {
+                String finalUrl = fileUrl.text.trim();
+
+                if (selectedType == 'PDF') {
+                  if (pickedPdfFile == null) {
+                    _showMsg('يرجى اختيار ملف PDF أولاً', isError: true);
+                    setState(() => _isLoading = false);
+                    return;
+                  }
+
+                  final fileName = 'lec_${DateTime.now().millisecondsSinceEpoch}.pdf';
+                  Uint8List? fileBytes = pickedPdfFile!.bytes;
+                  if (fileBytes == null && !kIsWeb && pickedPdfFile!.path != null) {
+                    fileBytes = await File(pickedPdfFile!.path!).readAsBytes();
+                  }
+
+                  if (fileBytes == null) {
+                    _showMsg('تعذر قراءة الملف المختار', isError: true);
+                    setState(() => _isLoading = false);
+                    return;
+                  }
+
+                  await _client.storage.from('materials').uploadBinary(
+                        fileName,
+                        fileBytes,
+                        fileOptions: const FileOptions(contentType: 'application/pdf', upsert: true),
+                      );
+
+                  finalUrl = _client.storage.from('materials').getPublicUrl(fileName);
+                } else {
+                  if (finalUrl.isEmpty) {
+                    _showMsg('يرجى لصق الرابط أولاً', isError: true);
+                    setState(() => _isLoading = false);
+                    return;
+                  }
+                }
+
+                await _client.from('materials').insert({
+                  'subject_id': selectedSubjId,
+                  'lecture_number': int.tryParse(lecNum.text) ?? 1,
+                  'title': fileTitle.text.trim(),
+                  'file_type': selectedType,
+                  'file_url': finalUrl,
+                });
+
+                _showMsg('تم رفع وحفظ المحتوى بنجاح');
+              } catch (e) {
+                _showMsg('فشل الرفع، تأكد من الإنترنت وصلاحيات Storage', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+            label: const Text('رفع وحفظ في المادة', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 3. تبويب إضافة سؤال لبنك الأسئلة
+  Widget _buildAddQuestionTab() {
+    int? selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
+    final qText = TextEditingController();
+    final opt1 = TextEditingController();
+    final opt2 = TextEditingController();
+    final opt3 = TextEditingController();
+    final opt4 = TextEditingController();
+    int correctIdx = 0;
+    final expCtrl = TextEditingController();
+
+    return StatefulBuilder(
+      builder: (context, setInnerState) => ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text('❓ إضافة سؤال جديد لبنك الأسئلة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 12),
+          if (_subjects.isNotEmpty)
+            DropdownButtonFormField<int>(
+              value: selectedSubjId,
+              decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
+              items: _subjects.map<DropdownMenuItem<int>>((s) => DropdownMenuItem(value: s['id'], child: Text(s['name']))).toList(),
+              onChanged: (val) => setInnerState(() => selectedSubjId = val),
+            ),
+          const SizedBox(height: 10),
+          TextField(controller: qText, maxLines: 2, decoration: const InputDecoration(labelText: 'نص السؤال', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          TextField(controller: opt1, decoration: const InputDecoration(labelText: 'الخيار الأول (A)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: opt2, decoration: const InputDecoration(labelText: 'الخيار الثاني (B)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: opt3, decoration: const InputDecoration(labelText: 'الخيار الثالث (C)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: opt4, decoration: const InputDecoration(labelText: 'الخيار الرابع (D)', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<int>(
+            value: correctIdx,
+            decoration: const InputDecoration(labelText: 'الإجابة الصحيحة', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 0, child: Text('الخيار الأول (A)')),
+              DropdownMenuItem(value: 1, child: Text('الخيار الثاني (B)')),
+              DropdownMenuItem(value: 2, child: Text('الخيار الثالث (C)')),
+              DropdownMenuItem(value: 3, child: Text('الخيار الرابع (D)')),
+            ],
+            onChanged: (val) => setInnerState(() => correctIdx = val ?? 0),
+          ),
+          const SizedBox(height: 10),
+          TextField(controller: expCtrl, decoration: const InputDecoration(labelText: 'توضيح الإجابة (اختياري)', border: OutlineInputBorder())),
+          const SizedBox(height: 14),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+            onPressed: () async {
+              if (selectedSubjId == null || qText.text.trim().isEmpty) return;
+              final opts = [opt1.text.trim(), opt2.text.trim(), opt3.text.trim(), opt4.text.trim()].where((e) => e.isNotEmpty).toList();
+              if (opts.length < 2) {
+                _showMsg('أدخل خيارين على الأقل', isError: true);
+                return;
+              }
+              setState(() => _isLoading = true);
+              try {
+                await _client.from('questions').insert({
+                  'subject_id': selectedSubjId,
+                  'question_text': qText.text.trim(),
+                  'options': jsonEncode(opts),
+                  'correct_index': correctIdx,
+                  'explanation': expCtrl.text.trim(),
+                });
+                _showMsg('تمت إضافة السؤال لبنك المادة بنجاح');
+              } catch (_) {
+                _showMsg('فشل حفظ السؤال', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+            child: const Text('حفظ السؤال في البنك'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 4. تبويب الجدول + ماسح كاميرا المندوب لتحضير الطلاب عبر QR
+  Widget _buildScheduleAndAttendanceTab() {
+    String selectedDay = 'السبت';
+    final orderCtrl = TextEditingController(text: 'المحاضرة الأولى');
+    final timeCtrl = TextEditingController(text: '08:00 - 10:00');
+    final subjCtrl = TextEditingController();
+    final hallCtrl = TextEditingController();
+    final docCtrl = TextEditingController();
+    final sessionCtrl = TextEditingController(text: 'محاضرة ${DateTime.now().month}/${DateTime.now().day}');
+
+    return StatefulBuilder(
+      builder: (context, setInnerState) => ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // قسم تحضير الطلاب بالكاميرا
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF181B20),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.greenAccent.withOpacity(0.4)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('📷 تحضير الطلاب بمسح كود (QR)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: sessionCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'اسم المحاضرة أو الجلسة الحالية',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.qr_code_scanner_rounded),
+                    label: const Text('فتح الكاميرا لمسح أكواد الطلاب', style: TextStyle(fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.greenAccent, foregroundColor: Colors.black),
+                    onPressed: () => _openAdminAttendanceScanner(sessionCtrl.text.trim()),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 36),
+
+          const Text('📅 إضافة محاضرة إلى الجدول', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 10),
+          DropdownButtonFormField<String>(
+            value: selectedDay,
+            decoration: const InputDecoration(labelText: 'اليوم', border: OutlineInputBorder()),
+            items: ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس']
+                .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                .toList(),
+            onChanged: (v) => setInnerState(() => selectedDay = v ?? 'السبت'),
+          ),
+          const SizedBox(height: 8),
+          TextField(controller: orderCtrl, decoration: const InputDecoration(labelText: 'ترتيب المحاضرة', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: timeCtrl, decoration: const InputDecoration(labelText: 'الوقت', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: subjCtrl, decoration: const InputDecoration(labelText: 'اسم المادة', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: hallCtrl, decoration: const InputDecoration(labelText: 'القاعة', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: docCtrl, decoration: const InputDecoration(labelText: 'اسم الدكتور', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          ElevatedButton(
+            onPressed: () async {
+              if (subjCtrl.text.trim().isEmpty) return;
+              setState(() => _isLoading = true);
+              try {
+                await _client.from('schedule').insert({
+                  'day_name': selectedDay,
+                  'lecture_order': orderCtrl.text.trim(),
+                  'time_range': timeCtrl.text.trim(),
+                  'subject_name': subjCtrl.text.trim(),
+                  'hall': hallCtrl.text.trim(),
+                  'doctor_name': docCtrl.text.trim(),
+                });
+                _showMsg('تمت إضافة المحاضرة للجدول');
+              } catch (_) {
+                _showMsg('فشل إضافة المحاضرة', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+            child: const Text('إضافة للجدول'),
+          ),
+          const Divider(height: 36),
+          const Text('✅ آخر الطلاب المسجلين حضورهم', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+          const SizedBox(height: 8),
+          if (_attendance.isEmpty)
+            const Text('لا توجد سجلات حضور حديثة', style: TextStyle(color: Colors.grey))
+          else
+            ..._attendance.map((a) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.check_circle, color: Colors.green),
+                  title: Text(a['full_name'] ?? ''),
+                  subtitle: Text('رقم القيد: ${a['student_id']} • الجلسة: ${a['session_code'] ?? ''}'),
+                )),
+        ],
+      ),
+    );
+  }
+
+  // كاميرا المندوب المستمرة لمسح أكواد الطلاب واحداً تلو الآخر
+  void _openAdminAttendanceScanner(String sessionName) {
+    final Set<String> scannedInSession = {};
+    final String session = sessionName.isEmpty ? 'جلسة عامة' : sessionName;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text('تحضير: $session')),
+          body: MobileScanner(
+            onDetect: (capture) async {
+              final barcodes = capture.barcodes;
+              if (barcodes.isEmpty || barcodes.first.rawValue == null) return;
+              final raw = barcodes.first.rawValue!;
+
+              String studentId = raw;
+              String studentName = 'طالب';
+              try {
+                final decoded = jsonDecode(raw);
+                studentId = decoded['id']?.toString() ?? raw;
+                studentName = decoded['name']?.toString() ?? 'طالب';
+              } catch (_) {}
+
+              if (scannedInSession.contains(studentId)) return;
+              scannedInSession.add(studentId);
+
+              try {
+                await _client.from('attendance').insert({
+                  'student_id': studentId,
+                  'full_name': studentName,
+                  'session_code': session,
+                });
+                _showMsg('✅ تم تحضير: $studentName ($studentId)');
+                _fetchInitialData();
+              } catch (_) {
+                scannedInSession.remove(studentId);
+                _showMsg('تعذر تسجيل $studentName، تأكد من الإنترنت', isError: true);
+              }
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 5. تبويب تغيير الرمز السري للإدارة
+  Widget _buildChangePinTab() {
+    final newPinCtrl = TextEditingController();
+    final confirmPinCtrl = TextEditingController();
+
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('🔐 تغيير الرمز السري للوحة الإدارة', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 8),
+          const Text('الرمز الافتراضي هو 3939. يمكنك تغييره هنا لرمز خاص بك لا يعرفه إلا المشرفون.', style: TextStyle(color: Colors.grey, fontSize: 13)),
+          const SizedBox(height: 20),
+          TextField(
+            controller: newPinCtrl,
+            keyboardType: TextInputType.number,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'الرمز السري الجديد', border: OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: confirmPinCtrl,
+            keyboardType: TextInputType.number,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'تأكيد الرمز السري الجديد', border: OutlineInputBorder()),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+              onPressed: () async {
+                final p1 = newPinCtrl.text.trim();
+                final p2 = confirmPinCtrl.text.trim();
+                if (p1.length < 4) {
+                  _showMsg('يجب أن يتكون الرمز من 4 أرقام على الأقل', isError: true);
+                  return;
+                }
+                if (p1 != p2) {
+                  _showMsg('الرمزان غير متطابقين', isError: true);
+                  return;
+                }
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString('admin_pin', p1);
+                newPinCtrl.clear();
+                confirmPinCtrl.clear();
+                _showMsg('تم تحديث الرمز السري للوحة الإدارة بنجاح');
+              },
+              child: const Text('حفظ الرمز السري الجديد', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ),
         ],
