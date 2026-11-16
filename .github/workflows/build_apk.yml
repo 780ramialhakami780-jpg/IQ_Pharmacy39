@@ -1,9 +1,14 @@
-name: Build IQ_Pharmacy39 APK
+name: Build IQ_Pharmacy39 (Icon + Android + iOS)
 
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   build:
@@ -13,15 +18,46 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-      - name: Initialize Android Platform
-        run: flutter create . --platforms=android --project-name iq_pharmacy39
+
+      - name: Generate Official Signing Certificate
+        run: |
+          mkdir -p ~/.android
+          rm -f ~/.android/debug.keystore
+          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=IQ Pharmacy 39, OU=Scientific Committee, O=Sanaa University, L=Sanaa, C=YE"
+
+      - name: Initialize Platforms
+        run: flutter create . --platforms=android,web --project-name iq_pharmacy39
+
       - name: Get Dependencies
         run: flutter pub get
-      - name: Build Debug APK
-        run: flutter build apk --debug
-      - name: Upload APK
+
+      - name: Generate App Icons
+        run: dart run flutter_launcher_icons
+
+      - name: Build Lightweight Android APKs
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build iOS & Web PWA
+        run: flutter build web --release --base-href "/IQ_Pharmacy39/"
+
+      - name: Upload Android APKs
         uses: actions/upload-artifact@v4
         with:
-          name: IQ_Pharmacy39-Debug-APK
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: IQ_Pharmacy39-Light-APKs
+          path: build/app/outputs/flutter-apk/app-*-release.apk
 
+      - name: Upload Web App for iOS
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy_ios_web:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
