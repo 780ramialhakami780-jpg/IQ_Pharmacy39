@@ -746,7 +746,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: StreamBuilder<List>>(
+            child: StreamBuilder(
               stream: stream,
               builder: (context, snapshot) {
                 if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
