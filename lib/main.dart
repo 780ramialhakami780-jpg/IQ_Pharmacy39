@@ -5,8 +5,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'home_screen.dart';
 
-// بيانات الربط الخاصة بمشروعك في Supabase
 const String supabaseUrl = 'https://stvavavzjrcxcivxykfv.supabase.co';
 const String supabaseAnonKey = 'sb_publishable_2D5B4SJgPAwqZqqgpiFaMA_HzTlka-k';
 
@@ -44,7 +44,7 @@ class IQPharmacyApp extends StatelessWidget {
           secondary: Color(0xFF2B6CB0),
         ),
       ),
-      home: isRegistered ? const MainDashboardPlaceholder() : const StudentRegistrationScreen(),
+      home: isRegistered ? const HomeScreen() : const StudentRegistrationScreen(),
     );
   }
 }
@@ -68,15 +68,10 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
     _requestAppPermissions();
   }
 
-  // طلب أذونات الإشعارات والتخزين عند فتح التطبيق
   Future<void> _requestAppPermissions() async {
-    await [
-      Permission.notification,
-      Permission.storage,
-    ].request();
+    await [Permission.notification, Permission.storage].request();
   }
 
-  // الحصول على بصمة الجهاز الفريدة لقفل الحساب
   Future<String> _getDeviceId() async {
     final deviceInfo = DeviceInfoPlugin();
     if (Platform.isAndroid) {
@@ -89,7 +84,6 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
     return 'unknown_device';
   }
 
-  // البحث عن رقم القيد في قاعدة البيانات (يتطلب إنترنت)
   Future<void> _verifyStudentId() async {
     final studentId = _idController.text.trim();
     if (studentId.isEmpty) {
@@ -120,7 +114,6 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
       final String currentDeviceId = await _getDeviceId();
       final String? registeredDevice = response['device_id'];
 
-      // التحقق مما إذا كان رقم القيد مرتبطاً بجهاز آخر مسبقاً
       if (registeredDevice != null && registeredDevice != currentDeviceId) {
         setState(() {
           _errorMessage = 'عذراً، هذا الرقم مرتبط بهاتف آخر مسبقاً ولا يمكن استخدامه مرتين.';
@@ -141,7 +134,6 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
     }
   }
 
-  // تأكيد الهوية وقفل رقم القيد بالجهاز نهائياً
   Future<void> _confirmAndLockAccount() async {
     if (_foundStudent == null) return;
     setState(() => _isLoading = true);
@@ -150,13 +142,11 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
       final String currentDeviceId = await _getDeviceId();
       final String studentId = _foundStudent!['student_id'];
 
-      // تحديث قاعدة البيانات لقفل الرقم بهذا الجهاز
       await Supabase.instance.client
           .from('students')
           .update({'device_id': currentDeviceId})
           .eq('student_id', studentId);
 
-      // حفظ البيانات محلياً للعمل بدون إنترنت مستقبلاً
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_registered', true);
       await prefs.setString('student_id', studentId);
@@ -165,7 +155,7 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
 
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const MainDashboardPlaceholder()),
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
       );
     } catch (e) {
       setState(() {
@@ -189,7 +179,6 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
     );
   }
 
-  // واجهة إدخال رقم القيد
   Widget _buildInputStep() {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -204,10 +193,7 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
           child: const Icon(Icons.school_rounded, size: 60, color: Color(0xFF4FD1C5)),
         ),
         const SizedBox(height: 24),
-        const Text(
-          'IQ_Pharmacy39',
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white),
-        ),
+        const Text('IQ_Pharmacy39', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
         const SizedBox(height: 8),
         const Text(
           'أدخل رقم قيدك الجامعي للتعرف على حسابك\n(تتطلب هذه الخطوة اتصالاً بالإنترنت لمرة واحدة فقط)',
@@ -224,10 +210,7 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
             hintText: 'رقم القيد الجامعي',
             filled: true,
             fillColor: const Color(0xFF181B20),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide.none,
-            ),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: const BorderSide(color: Color(0xFF4FD1C5), width: 1.5),
@@ -243,11 +226,7 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.redAccent),
             ),
-            child: Text(
-              _errorMessage!,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.redAccent, fontSize: 13),
-            ),
+            child: Text(_errorMessage!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
           ),
         ],
         const SizedBox(height: 24),
@@ -270,7 +249,6 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
     );
   }
 
-  // واجهة الترحيب وخياري (متابعة للتطبيق / لست أنا)
   Widget _buildConfirmationStep() {
     return Container(
       padding: const EdgeInsets.all(24),
@@ -285,16 +263,9 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
           const SizedBox(height: 16),
           const Text('مرحباً بك', style: TextStyle(fontSize: 16, color: Colors.grey)),
           const SizedBox(height: 8),
-          Text(
-            _foundStudent!['full_name'],
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
-          ),
+          Text(_foundStudent!['full_name'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
           const SizedBox(height: 8),
-          Text(
-            'رقم القيد: ${_foundStudent!['student_id']}',
-            style: const TextStyle(fontSize: 14, color: Color(0xFF4FD1C5)),
-          ),
+          Text('رقم القيد: ${_foundStudent!['student_id']}', style: const TextStyle(fontSize: 14, color: Color(0xFF4FD1C5))),
           const SizedBox(height: 20),
           const Text(
             'تنبيه: عند الضغط على "متابعة للتطبيق" سيتم ربط رقم قيدك بهذا الهاتف نهائياً ولن يتمكن أي شخص آخر من استخدامه.',
@@ -341,18 +312,6 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
           ),
         ],
       ),
-    );
-  }
-}
-
-// شاشة مؤقتة سنستبدلها في المرحلة الثالثة بالواجهة الرئيسية الكاملة
-class MainDashboardPlaceholder extends StatelessWidget {
-  const MainDashboardPlaceholder({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(child: Text('تم الدخول بنجاح! جاهز للمرحلة الثالثة')),
     );
   }
 }
