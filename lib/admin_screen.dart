@@ -396,59 +396,43 @@ class _AdminScreenState extends State<AdminScreen> {
 
   // 5. تبويب تغيير الرمز السري للإدارة
   Widget _buildChangePinTab() {
-    final newPinCtrl = TextEditingController();
-    final confirmPinCtrl = TextEditingController();
-
+    final pinCtrl = TextEditingController();
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('🔐 تغيير الرمز السري للوحة الإدارة', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const Text('تغيير الرمز السري العام للوحة الإدارة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          const Text('هذا الرمز يُطلب عند النقر 5 مرات على اسمك في الشاشة الرئيسية.', style: TextStyle(color: Colors.grey, fontSize: 13)),
-          const SizedBox(height: 20),
+          const Text('سيتم تحديث الرمز تلقائياً عند جميع المشرفين في الدفعة.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 16),
           TextField(
-            controller: newPinCtrl,
+            controller: pinCtrl,
             keyboardType: TextInputType.number,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'الرمز السري الجديد', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: 'الرمز السري الجديد (أرقام)', border: OutlineInputBorder()),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: confirmPinCtrl,
-            keyboardType: TextInputType.number,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'تأكيد الرمز السري الجديد', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             height: 48,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
               onPressed: () async {
-                final p1 = newPinCtrl.text.trim();
-                final p2 = confirmPinCtrl.text.trim();
-                if (p1.length < 4) {
-                  _showMsg('يجب أن يتكون الرمز من 4 أرقام على الأقل', isError: true);
-                  return;
-                }
-                if (p1 != p2) {
-                  _showMsg('الرمزان غير متطابقين', isError: true);
-                  return;
-                }
+                final newPin = pinCtrl.text.trim();
+                if (newPin.length < 4) return;
+                await Supabase.instance.client
+                    .from('app_settings')
+                    .upsert({'key': 'admin_pin', 'value': newPin});
                 final prefs = await SharedPreferences.getInstance();
-                await prefs.setString('admin_pin', p1);
-                newPinCtrl.clear();
-                confirmPinCtrl.clear();
-                _showMsg('تم تحديث الرمز السري للوحة الإدارة بنجاح');
+                await prefs.setString('admin_pin', newPin);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('تم تحديث الرمز السري العام لجميع المشرفين بنجاح'), backgroundColor: Colors.teal),
+                );
               },
-              child: const Text('حفظ الرمز السري الجديد', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text('حفظ الرمز الجديد للجميع', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ),
         ],
       ),
     );
   }
-}
