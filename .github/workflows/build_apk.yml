@@ -36,9 +36,9 @@ jobs:
       - name: Generate App Icons
         run: dart run flutter_launcher_icons
 
-      - name: Build Compact Universal Android APK
+      - name: Build Lightweight Android APK
         run: |
-          flutter build apk --release --target-platform android-arm,android-arm64
+          flutter build apk --release --target-platform android-arm64
           cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/IQ_Pharmacy39.apk
 
       - name: Verify APK Signature
