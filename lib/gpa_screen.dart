@@ -1,5 +1,15 @@
 import 'package:flutter/material.dart';
 
+class CourseItem {
+  final TextEditingController name;
+  double hours;
+  final TextEditingController grade;
+
+  CourseItem(String defaultName, this.hours)
+      : name = TextEditingController(text: defaultName),
+        grade = TextEditingController();
+}
+
 class GpaScreen extends StatefulWidget {
   const GpaScreen({super.key});
 
@@ -8,11 +18,11 @@ class GpaScreen extends StatefulWidget {
 }
 
 class _GpaScreenState extends State<GpaScreen> {
-  final List> _courses = [
-    {'name': TextEditingController(text: 'كيمياء صيدلانية'), 'hours': 3.0, 'grade': TextEditingController()},
-    {'name': TextEditingController(text: 'صيدلانيات'), 'hours': 3.0, 'grade': TextEditingController()},
-    {'name': TextEditingController(text: 'علم الأدوية'), 'hours': 3.0, 'grade': TextEditingController()},
-    {'name': TextEditingController(text: 'عقاقير'), 'hours': 2.0, 'grade': TextEditingController()},
+  final List<CourseItem> _courses = [
+    CourseItem('كيمياء صيدلانية', 3.0),
+    CourseItem('صيدلانيات', 3.0),
+    CourseItem('علم الأدوية', 3.0),
+    CourseItem('عقاقير', 2.0),
   ];
 
   final _prevGpaCtrl = TextEditingController();
@@ -26,12 +36,11 @@ class _GpaScreenState extends State<GpaScreen> {
     double totalPoints = 0;
     double totalHours = 0;
 
-    for (var c in _courses) {
-      final grade = double.tryParse(c['grade'].text.trim());
-      final hours = (c['hours'] as double);
+    for (final c in _courses) {
+      final grade = double.tryParse(c.grade.text.trim());
       if (grade != null && grade >= 0 && grade <= 100) {
-        totalPoints += grade * hours;
-        totalHours += hours;
+        totalPoints += grade * c.hours;
+        totalHours += c.hours;
       }
     }
 
@@ -73,11 +82,7 @@ class _GpaScreenState extends State<GpaScreen> {
               tooltip: 'إضافة مادة',
               onPressed: () {
                 setState(() {
-                  _courses.add({
-                    'name': TextEditingController(),
-                    'hours': 2.0,
-                    'grade': TextEditingController(),
-                  });
+                  _courses.add(CourseItem('', 2.0));
                 });
               },
             ),
@@ -170,7 +175,7 @@ class _GpaScreenState extends State<GpaScreen> {
                       Expanded(
                         flex: 3,
                         child: TextField(
-                          controller: item['name'],
+                          controller: item.name,
                           decoration: InputDecoration(
                             labelText: 'المادة ${index + 1}',
                             border: const OutlineInputBorder(),
@@ -180,13 +185,16 @@ class _GpaScreenState extends State<GpaScreen> {
                       ),
                       const SizedBox(width: 8),
                       DropdownButton<double>(
-                        value: item['hours'],
-                        items: [1.0, 2.0, 3.0, 4.0]
-                            .map((h) => DropdownMenuItem(value: h, child: Text('${h.toInt()} س')))
-                            .toList(),
+                        value: item.hours,
+                        items: const [
+                          DropdownMenuItem(value: 1.0, child: Text('1 س')),
+                          DropdownMenuItem(value: 2.0, child: Text('2 س')),
+                          DropdownMenuItem(value: 3.0, child: Text('3 س')),
+                          DropdownMenuItem(value: 4.0, child: Text('4 س')),
+                        ],
                         onChanged: (val) {
                           if (val != null) {
-                            setState(() => item['hours'] = val);
+                            setState(() => item.hours = val);
                             _calculate();
                           }
                         },
@@ -195,7 +203,7 @@ class _GpaScreenState extends State<GpaScreen> {
                       Expanded(
                         flex: 2,
                         child: TextField(
-                          controller: item['grade'],
+                          controller: item.grade,
                           keyboardType: const TextInputType.numberWithOptions(decimal: true),
                           onChanged: (_) => _calculate(),
                           decoration: const InputDecoration(
