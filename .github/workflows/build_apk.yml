@@ -36,13 +36,15 @@ jobs:
       - name: Generate App Icons
         run: dart run flutter_launcher_icons
 
-      - name: Build Lightweight Android APKs
-        run: flutter build apk --release --split-per-abi
+      - name: Build Universal Android APK
+        run: |
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/IQ_Pharmacy39.apk
 
       - name: Verify APK Signature
         run: |
           APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner | sort -V | tail -n 1)
-          "$APKSIGNER" verify --verbose --print-certs build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          "$APKSIGNER" verify --verbose --print-certs build/app/outputs/flutter-apk/IQ_Pharmacy39.apk
 
       - name: Build iOS & Web PWA
         run: flutter build web --release --base-href "/IQ_Pharmacy39/"
@@ -52,7 +54,7 @@ jobs:
         with:
           tag_name: latest
           name: IQ_Pharmacy39 Official Release
-          files: build/app/outputs/flutter-apk/app-*-release.apk
+          files: build/app/outputs/flutter-apk/IQ_Pharmacy39.apk
           overwrite_files: true
 
       - name: Upload Web App for iOS
