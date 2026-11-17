@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -26,7 +27,7 @@ class _AdminScreenState extends State<AdminScreen> {
   Future<void> _fetchInitialData() async {
     try {
       final subjs = await _client.from('subjects').select().order('sort_order');
-      final att = await _client.from('attendance').select().order('created_at', ascending: false).limit(50);
+      final att = await _client.from('attendance').select().order('created_at', ascending: false).limit(500);
       if (!mounted) return;
       setState(() {
         _subjects = subjs;
@@ -45,7 +46,7 @@ class _AdminScreenState extends State<AdminScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('لوحة إدارة الدفعة السرية'),
@@ -54,10 +55,11 @@ class _AdminScreenState extends State<AdminScreen> {
             isScrollable: true,
             indicatorColor: Color(0xFF4FD1C5),
             tabs: [
-              Tab(text: 'إشعارات وتكاليف'),
+              Tab(text: 'إشعارات وتنبيه عاجل'),
               Tab(text: 'المواد والملفات'),
               Tab(text: 'بنك الأسئلة'),
-              Tab(text: 'الجدول والحضور'),
+              Tab(text: 'الجدول وكشف الحضور'),
+              Tab(text: 'الأجهزة والدليل'),
               Tab(text: 'الرمز السري'),
             ],
           ),
@@ -70,6 +72,7 @@ class _AdminScreenState extends State<AdminScreen> {
                   _buildSubjectsAndFilesTab(),
                   _buildAddQuestionTab(),
                   _buildScheduleAndAttendanceTab(),
+                  _buildDevicesAndDirectoryTab(),
                   _buildChangePinTab(),
                 ],
               ),
@@ -77,8 +80,9 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 1. تبويب إرسال إشعار + إضافة تكليف
+  // 1. تبويب الشريط العاجل + إرسال إشعار + إضافة تكليف
   Widget _buildNotificationsAndTasksTab() {
+    final urgentCtrl = TextEditingController();
     final notifTitle = TextEditingController();
     final notifBody = TextEditingController();
 
@@ -90,7 +94,56 @@ class _AdminScreenState extends State<AdminScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('📢 إرسال إشعار عاجل للدفعة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+        const Text('🚨 شريط التنبيه العاجل أعلى الرئيسية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+        const SizedBox(height: 6),
+        const Text('يظهر بلون أحمر بارز فور فتح التطبيق (مثل: نقل محاضرة أو اعتذار دكتور).', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 10),
+        TextField(
+          controller: urgentCtrl,
+          decoration: const InputDecoration(labelText: 'نص التنبيه العاجل', border: OutlineInputBorder()),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.campaign),
+                label: const Text('تثبيت التنبيه'),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+                onPressed: () async {
+                  if (urgentCtrl.text.trim().isEmpty) return;
+                  setState(() => _isLoading = true);
+                  try {
+                    await _client.from('app_settings').upsert({'key': 'urgent_banner', 'value': urgentCtrl.text.trim()});
+                    _showMsg('تم تفعيل الشريط العاجل لجميع الطلاب');
+                  } catch (_) {
+                    _showMsg('فشل التحديث', isError: true);
+                  } finally {
+                    if (mounted) setState(() => _isLoading = false);
+                  }
+                },
+              ),
+            ),
+            const SizedBox(width: 10),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.visibility_off),
+              label: const Text('إخفاء الشريط'),
+              onPressed: () async {
+                setState(() => _isLoading = true);
+                try {
+                  await _client.from('app_settings').upsert({'key': 'urgent_banner', 'value': ''});
+                  _showMsg('تم إخفاء الشريط العاجل');
+                } catch (_) {
+                  _showMsg('فشل الإخفاء', isError: true);
+                } finally {
+                  if (mounted) setState(() => _isLoading = false);
+                }
+              },
+            ),
+          ],
+        ),
+        const Divider(height: 36),
+        const Text('📢 إرسال إشعار عام للدفعة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
         const SizedBox(height: 10),
         TextField(controller: notifTitle, decoration: const InputDecoration(labelText: 'عنوان الإشعار', border: OutlineInputBorder())),
         const SizedBox(height: 10),
@@ -321,7 +374,7 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 4. تبويب الجدول + كشف الحضور عبر QR
+  // 4. تبويب الجدول + تصدير كشوفات الحضور
   Widget _buildScheduleAndAttendanceTab() {
     String selectedDay = 'السبت';
     final orderCtrl = TextEditingController(text: 'المحاضرة الأولى');
@@ -330,71 +383,228 @@ class _AdminScreenState extends State<AdminScreen> {
     final hallCtrl = TextEditingController();
     final docCtrl = TextEditingController();
 
+    final sessionCodes = <String>{'الكل', ..._attendance.map((e) => (e['session_code'] ?? '').toString()).where((e) => e.isNotEmpty)}.toList();
+    String selectedSession = 'الكل';
+
+    return StatefulBuilder(
+      builder: (context, setInnerState) {
+        final filteredAtt = selectedSession == 'الكل'
+            ? _attendance
+            : _attendance.where((a) => (a['session_code'] ?? '').toString() == selectedSession).toList();
+
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Text('📅 إضافة محاضرة إلى الجدول', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              value: selectedDay,
+              decoration: const InputDecoration(labelText: 'اليوم', border: OutlineInputBorder()),
+              items: ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس']
+                  .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                  .toList(),
+              onChanged: (v) => setInnerState(() => selectedDay = v ?? 'السبت'),
+            ),
+            const SizedBox(height: 8),
+            TextField(controller: orderCtrl, decoration: const InputDecoration(labelText: 'ترتيب المحاضرة', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: timeCtrl, decoration: const InputDecoration(labelText: 'الوقت', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: subjCtrl, decoration: const InputDecoration(labelText: 'اسم المادة', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: hallCtrl, decoration: const InputDecoration(labelText: 'القاعة', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            TextField(controller: docCtrl, decoration: const InputDecoration(labelText: 'اسم الدكتور', border: OutlineInputBorder())),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () async {
+                if (subjCtrl.text.trim().isEmpty) return;
+                setState(() => _isLoading = true);
+                try {
+                  await _client.from('schedule').insert({
+                    'day_name': selectedDay,
+                    'lecture_order': orderCtrl.text.trim(),
+                    'time_range': timeCtrl.text.trim(),
+                    'subject_name': subjCtrl.text.trim(),
+                    'hall': hallCtrl.text.trim(),
+                    'doctor_name': docCtrl.text.trim(),
+                  });
+                  _showMsg('تمت إضافة المحاضرة للجدول');
+                } catch (_) {
+                  _showMsg('فشل إضافة المحاضرة', isError: true);
+                } finally {
+                  if (mounted) setState(() => _isLoading = false);
+                }
+              },
+              child: const Text('إضافة للجدول'),
+            ),
+            const Divider(height: 36),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('✅ كشف الحضور (${filteredAtt.length})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.copy_all, size: 18),
+                  label: const Text('نسخ الكشف لـ Excel'),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                  onPressed: filteredAtt.isEmpty
+                      ? null
+                      : () {
+                          final buffer = StringBuffer('رقم القيد\tالاسم الكامل\tكود الجلسة\n');
+                          for (var a in filteredAtt) {
+                            buffer.writeln('${a['student_id']}\t${a['full_name']}\t${a['session_code']}');
+                          }
+                          Clipboard.setData(ClipboardData(text: buffer.toString()));
+                          _showMsg('تم نسخ الكشف (${filteredAtt.length} طالب) جاهزاً للصق في Excel أو واتساب');
+                        },
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (sessionCodes.length > 1)
+              DropdownButtonFormField<String>(
+                value: selectedSession,
+                decoration: const InputDecoration(labelText: 'تصفية حسب كود الجلسة / المادة', border: OutlineInputBorder()),
+                items: sessionCodes.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                onChanged: (v) => setInnerState(() => selectedSession = v ?? 'الكل'),
+              ),
+            const SizedBox(height: 8),
+            if (filteredAtt.isEmpty)
+              const Text('لا توجد سجلات حضور مسجلة حالياً', style: TextStyle(color: Colors.grey))
+            else
+              ...filteredAtt.take(60).map((a) => ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.check_circle, color: Colors.green),
+                    title: Text(a['full_name'] ?? ''),
+                    subtitle: Text('رقم القيد: ${a['student_id']} • الكود: ${a['session_code']}'),
+                  )),
+          ],
+        );
+      },
+    );
+  }
+
+  // 5. تبويب فك ارتباط الأجهزة + إدارة دليل الدفعة
+  Widget _buildDevicesAndDirectoryTab() {
+    final searchCtrl = TextEditingController();
+    List<dynamic> foundStudents = [];
+
+    final dirTitleCtrl = TextEditingController();
+    final dirValueCtrl = TextEditingController();
+    String dirType = 'رابط';
+
     return StatefulBuilder(
       builder: (context, setInnerState) => ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('📅 إضافة محاضرة إلى الجدول', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const Text('📱 فك ارتباط هاتف طالب (تصفير device_id)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 6),
+          const Text('ابحث برقم القيد أو جزء من الاسم لفك قفل الهاتف القديم للطالب.', style: TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 10),
-          DropdownButtonFormField<String>(
-            value: selectedDay,
-            decoration: const InputDecoration(labelText: 'اليوم', border: OutlineInputBorder()),
-            items: ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس']
-                .map((d) => DropdownMenuItem(value: d, child: Text(d)))
-                .toList(),
-            onChanged: (v) => setInnerState(() => selectedDay = v ?? 'السبت'),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: searchCtrl,
+                  decoration: const InputDecoration(labelText: 'رقم القيد أو اسم الطالب', border: OutlineInputBorder()),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16)),
+                onPressed: () async {
+                  final q = searchCtrl.text.trim();
+                  if (q.isEmpty) return;
+                  try {
+                    final res = await _client
+                        .from('students')
+                        .select()
+                        .or('student_id.ilike.%$q%,full_name.ilike.%$q%')
+                        .limit(10);
+                    setInnerState(() => foundStudents = res);
+                  } catch (_) {
+                    _showMsg('تعذر البحث في قاعدة البيانات', isError: true);
+                  }
+                },
+                child: const Text('بحث', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          TextField(controller: orderCtrl, decoration: const InputDecoration(labelText: 'ترتيب المحاضرة', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: timeCtrl, decoration: const InputDecoration(labelText: 'الوقت', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: subjCtrl, decoration: const InputDecoration(labelText: 'اسم المادة', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: hallCtrl, decoration: const InputDecoration(labelText: 'القاعة', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: docCtrl, decoration: const InputDecoration(labelText: 'اسم الدكتور', border: OutlineInputBorder())),
           const SizedBox(height: 10),
-          ElevatedButton(
+          ...foundStudents.map((st) {
+            final hasDevice = st['device_id'] != null && st['device_id'].toString().isNotEmpty;
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                title: Text(st['full_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                subtitle: Text('رقم القيد: ${st['student_id']} • ${hasDevice ? 'مرتبط بهاتف' : 'غير مرتبط'}'),
+                trailing: ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: hasDevice ? Colors.orange : Colors.grey, foregroundColor: Colors.black),
+                  onPressed: !hasDevice
+                      ? null
+                      : () async {
+                          try {
+                            await _client.from('students').update({'device_id': null}).eq('student_id', st['student_id']);
+                            setInnerState(() => st['device_id'] = null);
+                            _showMsg('تم فك ارتباط الجهاز بنجاح، يمكن للطالب الدخول من هاتفه الجديد الآن');
+                          } catch (_) {
+                            _showMsg('فشل فك الارتباط', isError: true);
+                          }
+                        },
+                  child: const Text('فك القفل'),
+                ),
+              ),
+            );
+          }),
+          const Divider(height: 36),
+          const Text('📇 إضافة عنصر لدليل المناديب والروابط', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+          const SizedBox(height: 10),
+          TextField(controller: dirTitleCtrl, decoration: const InputDecoration(labelText: 'العنوان (مثلاً: مندوب مادة العقاقير / رابط القناة)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: dirValueCtrl, decoration: const InputDecoration(labelText: 'الرقم أو الرابط', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: dirType,
+            decoration: const InputDecoration(labelText: 'النوع', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'رابط', child: Text('رابط إلكتروني')),
+              DropdownMenuItem(value: 'تواصل', child: Text('رقم تواصل / مندوب')),
+            ],
+            onChanged: (v) => setInnerState(() => dirType = v ?? 'رابط'),
+          ),
+          const SizedBox(height: 10),
+          ElevatedButton.icon(
+            icon: const Icon(Icons.add_link),
+            label: const Text('إضافة إلى الدليل'),
             onPressed: () async {
-              if (subjCtrl.text.trim().isEmpty) return;
+              if (dirTitleCtrl.text.trim().isEmpty || dirValueCtrl.text.trim().isEmpty) return;
               setState(() => _isLoading = true);
               try {
-                await _client.from('schedule').insert({
-                  'day_name': selectedDay,
-                  'lecture_order': orderCtrl.text.trim(),
-                  'time_range': timeCtrl.text.trim(),
-                  'subject_name': subjCtrl.text.trim(),
-                  'hall': hallCtrl.text.trim(),
-                  'doctor_name': docCtrl.text.trim(),
+                List<dynamic> currentList = [];
+                final existing = await _client.from('app_settings').select('value').eq('key', 'batch_directory').maybeSingle();
+                if (existing != null && existing['value'] != null && existing['value'].toString().isNotEmpty) {
+                  currentList = jsonDecode(existing['value']);
+                }
+                currentList.add({
+                  'title': dirTitleCtrl.text.trim(),
+                  'value': dirValueCtrl.text.trim(),
+                  'type': dirType,
                 });
-                _showMsg('تمت إضافة المحاضرة للجدول');
+                await _client.from('app_settings').upsert({'key': 'batch_directory', 'value': jsonEncode(currentList)});
+                _showMsg('تمت الإضافة إلى دليل الدفعة بنجاح');
               } catch (_) {
-                _showMsg('فشل إضافة المحاضرة', isError: true);
+                _showMsg('فشلت الإضافة', isError: true);
               } finally {
                 if (mounted) setState(() => _isLoading = false);
               }
             },
-            child: const Text('إضافة للجدول'),
           ),
-          const Divider(height: 36),
-          const Text('✅ آخر الطلاب المسجلين حضورهم عبر QR', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
-          const SizedBox(height: 8),
-          if (_attendance.isEmpty)
-            const Text('لا توجد سجلات حضور حديثة', style: TextStyle(color: Colors.grey))
-          else
-            ..._attendance.map((a) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.check_circle, color: Colors.green),
-                  title: Text(a['full_name'] ?? ''),
-                  subtitle: Text('رقم القيد: ${a['student_id']} • الكود: ${a['session_code']}'),
-                )),
         ],
       ),
     );
   }
 
-  // 5. تبويب تغيير الرمز السري للإدارة
+  // 6. تبويب تغيير الرمز السري للإدارة
   Widget _buildChangePinTab() {
     final pinCtrl = TextEditingController();
     return Padding(
@@ -436,4 +646,4 @@ class _AdminScreenState extends State<AdminScreen> {
       ),
     );
   }
-  }
+}
