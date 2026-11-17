@@ -3,6 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+class DirectoryItem {
+  final String title;
+  final String value;
+  final String type;
+
+  DirectoryItem({required this.title, required this.value, required this.type});
+}
+
 class DirectoryScreen extends StatefulWidget {
   const DirectoryScreen({super.key});
 
@@ -12,11 +20,11 @@ class DirectoryScreen extends StatefulWidget {
 
 class _DirectoryScreenState extends State<DirectoryScreen> {
   bool _loading = true;
-  List> _items = [
-    {'title': 'بوابة الطالب الجامعية - جامعة صنعاء', 'value': 'https://portal.su.edu.ye', 'type': 'رابط'},
-    {'title': 'قناة الدفعة 39 على تيليجرام', 'value': 'أضف رابط القناة من لوحة الإدارة', 'type': 'رابط'},
-    {'title': 'مندوب الدفعة العام (بنين)', 'value': 'أضف الاسم والرقم من لوحة الإدارة', 'type': 'تواصل'},
-    {'title': 'مندوبة الدفعة (بنات)', 'value': 'أضف الاسم والرقم من لوحة الإدارة', 'type': 'تواصل'},
+  List<DirectoryItem> _items = [
+    DirectoryItem(title: 'بوابة الطالب الجامعية - جامعة صنعاء', value: 'https://portal.su.edu.ye', type: 'رابط'),
+    DirectoryItem(title: 'قناة الدفعة 39 على تيليجرام', value: 'أضف رابط القناة من لوحة الإدارة', type: 'رابط'),
+    DirectoryItem(title: 'مندوب الدفعة العام (بنين)', value: 'أضف الاسم والرقم من لوحة الإدارة', type: 'تواصل'),
+    DirectoryItem(title: 'مندوبة الدفعة (بنات)', value: 'أضف الاسم والرقم من لوحة الإدارة', type: 'تواصل'),
   ];
 
   @override
@@ -33,9 +41,16 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
           .eq('key', 'batch_directory')
           .maybeSingle();
       if (res != null && res['value'] != null && res['value'].toString().isNotEmpty) {
-        final List decoded = jsonDecode(res['value']);
+        final decoded = jsonDecode(res['value']) as List<dynamic>;
         setState(() {
-          _items = decoded.map((e) => Map<String, String>.from(e)).toList();
+          _items = decoded.map((e) {
+            final map = e as Map<String, dynamic>;
+            return DirectoryItem(
+              title: (map['title'] ?? '').toString(),
+              value: (map['value'] ?? '').toString(),
+              type: (map['type'] ?? 'رابط').toString(),
+            );
+          }).toList();
         });
       }
     } catch (_) {}
@@ -57,7 +72,7 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                 itemCount: _items.length,
                 itemBuilder: (context, index) {
                   final item = _items[index];
-                  final isLink = item['type'] == 'رابط';
+                  final isLink = item.type == 'رابط';
                   return Card(
                     margin: const EdgeInsets.only(bottom: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
@@ -69,16 +84,16 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                           color: const Color(0xFF4FD1C5),
                         ),
                       ),
-                      title: Text(item['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      title: Text(item.title, style: const TextStyle(fontWeight: FontWeight.bold)),
                       subtitle: Padding(
                         padding: const EdgeInsets.only(top: 4),
-                        child: Text(item['value'] ?? '', style: const TextStyle(fontSize: 13)),
+                        child: Text(item.value, style: const TextStyle(fontSize: 13)),
                       ),
                       trailing: IconButton(
                         icon: const Icon(Icons.copy, size: 20),
                         tooltip: 'نسخ',
                         onPressed: () {
-                          Clipboard.setData(ClipboardData(text: item['value'] ?? ''));
+                          Clipboard.setData(ClipboardData(text: item.value));
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('تم النسخ إلى الحافظة'), duration: Duration(seconds: 2)),
                           );
