@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'app_prefs.dart';
 import 'subject_screen.dart';
 import 'admin_screen.dart';
 import 'gpa_screen.dart';
@@ -116,13 +117,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم تحديث ومزامنة جميع البيانات بنجاح'), backgroundColor: Colors.teal),
+          SnackBar(
+            content: Text(AppPrefs.tr('تم تحديث ومزامنة جميع البيانات بنجاح', 'All data synced successfully')),
+            backgroundColor: Colors.teal,
+          ),
         );
       }
     } catch (e) {
       if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('أنت تعمل الآن بوضع عدم الاتصال (البيانات المحفوظة)'), backgroundColor: Colors.orange),
+          SnackBar(
+            content: Text(AppPrefs.tr('أنت تعمل الآن بوضع عدم الاتصال (البيانات المحفوظة)', 'Offline mode (using cached data)')),
+            backgroundColor: Colors.orange,
+          ),
         );
       }
     } finally {
@@ -132,10 +139,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+
     final pages = [
-      _buildDashboardTab(),
-      _buildScheduleTab(),
-      _buildAssignmentsTab(),
+      _buildDashboardTab(cardBg, accent),
+      _buildScheduleTab(cardBg, accent),
+      _buildAssignmentsTab(cardBg),
     ];
 
     return Scaffold(
@@ -143,19 +153,21 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),
-        backgroundColor: const Color(0xFF181B20),
-        selectedItemColor: const Color(0xFF4FD1C5),
+        backgroundColor: cardBg,
+        selectedItemColor: accent,
         unselectedItemColor: Colors.grey,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home_rounded), label: 'الرئيسية'),
-          BottomNavigationBarItem(icon: Icon(Icons.calendar_month_rounded), label: 'الجدول'),
-          BottomNavigationBarItem(icon: Icon(Icons.push_pin_rounded), label: 'التكاليف'),
+        items: [
+          BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
+          BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
+          BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
         ],
       ),
     );
   }
 
-  Widget _buildDashboardTab() {
+  Widget _buildDashboardTab(Color cardBg, Color accent) {
+    final borderCol = Colors.grey.withOpacity(0.2);
+
     return RefreshIndicator(
       onRefresh: () => _syncWithCloud(silent: false),
       child: ListView(
@@ -165,7 +177,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
-                color: Colors.redAccent.withOpacity(0.16),
+                color: Colors.redAccent.withOpacity(0.14),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: Colors.redAccent),
               ),
@@ -177,9 +189,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('تنبيه عاجل للدفعة', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12)),
+                        Text(
+                          AppPrefs.tr('تنبيه عاجل للدفعة', 'Urgent Batch Alert'),
+                          style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
                         const SizedBox(height: 2),
-                        Text(_urgentBanner, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                        Text(_urgentBanner, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                       ],
                     ),
                   ),
@@ -194,12 +209,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('مرحباً بك،', style: TextStyle(color: Colors.grey, fontSize: 13)),
+                    Text(AppPrefs.tr('مرحباً بك،', 'Welcome,'), style: const TextStyle(color: Colors.grey, fontSize: 13)),
                     Text(
                       _studentName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white),
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
@@ -212,7 +227,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(color: Colors.amber),
                   ),
-                  child: const Text('مندوب / مشرف', style: TextStyle(color: Colors.amber, fontSize: 11, fontWeight: FontWeight.bold)),
+                  child: Text(
+                    AppPrefs.tr('مندوب / مشرف', 'Admin'),
+                    style: const TextStyle(color: Colors.amber, fontSize: 11, fontWeight: FontWeight.bold),
+                  ),
                 ),
             ],
           ),
@@ -221,22 +239,24 @@ class _HomeScreenState extends State<HomeScreen> {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                _topActionBtn(Icons.qr_code_2_rounded, 'كودي (QR)', () => _showMyStudentQR()),
-                _topActionBtn(Icons.calculate_rounded, 'حاسبة المعدل', () {
+                _topActionBtn(Icons.qr_code_2_rounded, AppPrefs.tr('كودي (QR)', 'My QR'), () => _showMyStudentQR(), cardBg, accent),
+                _topActionBtn(Icons.calculate_rounded, AppPrefs.tr('حاسبة المعدل', 'GPA Calc'), () {
                   Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
-                }),
-                _topActionBtn(Icons.contact_phone_rounded, 'دليل الدفعة', () {
+                }, cardBg, accent),
+                _topActionBtn(Icons.contact_phone_rounded, AppPrefs.tr('دليل الدفعة', 'Directory'), () {
                   Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
-                }),
-                _topActionBtn(Icons.search_rounded, 'بحث', () => _openGlobalSearch()),
-                _topActionBtn(Icons.notifications_active_rounded, 'الإشعارات', () => _openNotifications(), badge: _notifications.length),
+                }, cardBg, accent),
+                _topActionBtn(Icons.search_rounded, AppPrefs.tr('بحث', 'Search'), () => _openGlobalSearch(), cardBg, accent),
+                _topActionBtn(Icons.notifications_active_rounded, AppPrefs.tr('الإشعارات', 'Alerts'), () => _openNotifications(), cardBg, accent, badge: _notifications.length),
                 _topActionBtn(
                   _isSyncing ? Icons.hourglass_top_rounded : Icons.sync_rounded,
-                  'مزامنة',
+                  AppPrefs.tr('مزامنة', 'Sync'),
                   () => _syncWithCloud(silent: false),
+                  cardBg,
+                  accent,
                 ),
-                _topActionBtn(Icons.chat_bubble_outline_rounded, 'الدردشة', () => _openBatchChat()),
-                _topActionBtn(Icons.settings_rounded, 'الإعدادات', () => _openGeneralSettings()),
+                _topActionBtn(Icons.chat_bubble_outline_rounded, AppPrefs.tr('الدردشة', 'Chat'), () => _openBatchChat(), cardBg, accent),
+                _topActionBtn(Icons.settings_rounded, AppPrefs.tr('الإعدادات', 'Settings'), () => _openGeneralSettings(), cardBg, accent),
               ],
             ),
           ),
@@ -256,12 +276,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('تطبيق IQ_Pharmacy39', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text(
+                        AppPrefs.tr('تطبيق IQ_Pharmacy39', 'IQ_Pharmacy39 App'),
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+                      ),
                       const SizedBox(height: 4),
                       Text(
                         _notifications.isNotEmpty
                             ? _notifications.first['title']
-                            : 'دفعة 39 صيدلة - بوابتك الدراسية المتكاملة',
+                            : AppPrefs.tr('دفعة 39 صيدلة - بوابتك الدراسية المتكاملة', 'Batch 39 Pharmacy - Your Study Portal'),
                         style: const TextStyle(fontSize: 13, color: Colors.white70),
                       ),
                     ],
@@ -281,17 +304,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF181B20),
+                      color: cardBg,
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white10),
+                      border: Border.all(color: borderCol),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Icon(Icons.event_note_rounded, color: Color(0xFF4FD1C5), size: 24),
+                        Icon(Icons.event_note_rounded, color: accent, size: 24),
                         const SizedBox(height: 8),
-                        Text('الجدول (${_schedule.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        const Text('المحاضرات والقاعات', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                        Text(AppPrefs.tr('الجدول (${_schedule.length})', 'Schedule (${_schedule.length})'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        Text(AppPrefs.tr('المحاضرات والقاعات', 'Lectures & Halls'), style: const TextStyle(fontSize: 11, color: Colors.grey)),
                       ],
                     ),
                   ),
@@ -305,17 +328,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF181B20),
+                      color: cardBg,
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white10),
+                      border: Border.all(color: borderCol),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Icon(Icons.fact_check_rounded, color: Colors.greenAccent, size: 24),
+                        const Icon(Icons.fact_check_rounded, color: Colors.green, size: 24),
                         const SizedBox(height: 8),
-                        Text('سجل حضوري (${_myAttendance.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        const Text('اضغط لعرض التفاصيل', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                        Text(AppPrefs.tr('سجل حضوري (${_myAttendance.length})', 'Attendance (${_myAttendance.length})'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        Text(AppPrefs.tr('اضغط لعرض التفاصيل', 'Tap for details'), style: const TextStyle(fontSize: 11, color: Colors.grey)),
                       ],
                     ),
                   ),
@@ -325,21 +348,21 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 20),
 
-          const Text('المواد الدراسية', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(AppPrefs.tr('المواد الدراسية', 'Subjects'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 12),
 
           if (_subjects.isEmpty)
-            const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('اسحب للأسفل لمزامنة المواد لأول مرة')))
+            Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(AppPrefs.tr('اسحب للأسفل لمزامنة المواد لأول مرة', 'Pull down to sync subjects'))))
           else
             ..._subjects.map((subj) {
-              Color cardColor = const Color(0xFF2B6CB0);
+              Color subjColor = const Color(0xFF2B6CB0);
               try {
                 final hex = (subj['color_hex'] ?? '#2B6CB0').toString().replaceAll('#', '');
-                cardColor = Color(int.parse('FF$hex', radix: 16));
+                subjColor = Color(int.parse('FF$hex', radix: 16));
               } catch (_) {}
 
               return Card(
-                color: const Color(0xFF181B20),
+                color: cardBg,
                 margin: const EdgeInsets.only(bottom: 12),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 child: ListTile(
@@ -347,17 +370,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   leading: Container(
                     width: 46,
                     height: 46,
-                    decoration: BoxDecoration(color: cardColor.withOpacity(0.2), borderRadius: BorderRadius.circular(12)),
-                    child: Icon(Icons.menu_book_rounded, color: cardColor),
+                    decoration: BoxDecoration(color: subjColor.withOpacity(0.18), borderRadius: BorderRadius.circular(12)),
+                    child: Icon(Icons.menu_book_rounded, color: subjColor),
                   ),
                   title: Text(subj['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  subtitle: Text(subj['subtitle'] ?? 'اضغط لفتح المادة والملفات', style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                  subtitle: Text(subj['subtitle'] ?? AppPrefs.tr('اضغط لفتح المادة والملفات', 'Tap to open subject files'), style: const TextStyle(color: Colors.grey, fontSize: 12)),
                   trailing: const Icon(Icons.chevron_right_rounded, color: Colors.grey),
                   onTap: () {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => SubjectScreen(subject: subj, defaultColor: cardColor),
+                        builder: (_) => SubjectScreen(subject: subj, defaultColor: subjColor),
                       ),
                     );
                   },
@@ -370,6 +393,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showMyAttendanceDetails() {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
     final Map<String, int> grouped = {};
     for (var record in _myAttendance) {
       final code = (record['session_code'] ?? 'عام').toString();
@@ -378,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF181B20),
+      backgroundColor: cardBg,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => Padding(
         padding: const EdgeInsets.all(20),
@@ -389,24 +414,33 @@ class _HomeScreenState extends State<HomeScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('سجل الحضور الشخصي (QR)', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
-                Chip(label: Text('الإجمالي: ${_myAttendance.length}')),
+                Text(AppPrefs.tr('سجل الحضور الشخصي (QR)', 'My Attendance Log (QR)'), style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: accent)),
+                Chip(label: Text(AppPrefs.tr('الإجمالي: ${_myAttendance.length}', 'Total: ${_myAttendance.length}'))),
               ],
             ),
             const SizedBox(height: 12),
             if (_myAttendance.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 20),
-                child: Center(child: Text('لم يتم تسجيل أي حضور لك بعد. اعرض كود QR الخاص بك للمندوب في المحاضرة.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey))),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Center(
+                  child: Text(
+                    AppPrefs.tr(
+                      'لم يتم تسجيل أي حضور لك بعد. اعرض كود QR الخاص بك للمندوب في المحاضرة.',
+                      'No attendance recorded yet. Show your QR code to the admin in class.',
+                    ),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ),
               )
             else
               Flexible(
                 child: ListView(
                   shrinkWrap: true,
                   children: grouped.entries.map((e) => ListTile(
-                    leading: const Icon(Icons.check_circle, color: Colors.greenAccent),
-                    title: Text('كود الجلسة / المادة: ${e.key}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    trailing: Text('${e.value} محاضرة', style: const TextStyle(color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+                    leading: const Icon(Icons.check_circle, color: Colors.green),
+                    title: Text('${AppPrefs.tr('الجلسة / المادة:', 'Session:')} ${e.key}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    trailing: Text('${e.value} ${AppPrefs.tr('محاضرة', 'lectures')}', style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
                   )).toList(),
                 ),
               ),
@@ -416,22 +450,22 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _topActionBtn(IconData icon, String label, VoidCallback onTap, {int badge = 0}) {
+  Widget _topActionBtn(IconData icon, String label, VoidCallback onTap, Color cardBg, Color accent, {int badge = 0}) {
     return Padding(
-      padding: const EdgeInsets.only(left: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFF181B20),
+            color: cardBg,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white12),
+            border: Border.all(color: Colors.grey.withOpacity(0.2)),
           ),
           child: Row(
             children: [
-              Icon(icon, size: 18, color: const Color(0xFF4FD1C5)),
+              Icon(icon, size: 18, color: accent),
               const SizedBox(width: 6),
               Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
               if (badge > 0) ...[
@@ -439,7 +473,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(color: Colors.redAccent, borderRadius: BorderRadius.circular(10)),
-                  child: Text('$badge', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                  child: Text('$badge', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white)),
                 ),
               ]
             ],
@@ -450,6 +484,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showMyStudentQR() {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
     final qrPayload = jsonEncode({
       'id': _studentId,
       'name': _studentName,
@@ -458,9 +494,9 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF181B20),
+        backgroundColor: cardBg,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('بطاقة التحضير الذكية', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+        title: Text(AppPrefs.tr('بطاقة التحضير الذكية', 'Smart Attendance QR'), textAlign: TextAlign.center, style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -469,6 +505,7 @@ class _HomeScreenState extends State<HomeScreen> {
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.grey.withOpacity(0.3)),
               ),
               child: QrImageView(
                 data: qrPayload,
@@ -478,23 +515,26 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 16),
-            Text(_studentName, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+            Text(_studentName, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
-            Text('رقم القيد: $_studentId', style: const TextStyle(fontSize: 14, color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+            Text('${AppPrefs.tr('رقم القيد:', 'Student ID:')} $_studentId', style: TextStyle(fontSize: 14, color: accent, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
-            const Text(
-              'أبرز هذا الكود للمندوب ليتم مسحه وتسجيل حضورك (يعمل بدون إنترنت)',
+            Text(
+              AppPrefs.tr(
+                'أبرز هذا الكود للمندوب ليتم مسحه وتسجيل حضورك (يعمل بدون إنترنت)',
+                'Show this QR code to the admin to record attendance (works offline)',
+              ),
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 11, color: Colors.grey),
+              style: const TextStyle(fontSize: 11, color: Colors.grey),
             ),
           ],
         ),
         actions: [
           Center(
             child: ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+              style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
               onPressed: () => Navigator.pop(context),
-              child: const Text('إغلاق', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: Text(AppPrefs.tr('إغلاق', 'Close'), style: const TextStyle(fontWeight: FontWeight.bold)),
             ),
           ),
         ],
@@ -502,19 +542,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildScheduleTab() {
+  Widget _buildScheduleTab(Color cardBg, Color accent) {
     final selectedDay = _days[_selectedDayIndex];
     final dayLectures = _schedule.where((item) => item['day_name'] == selectedDay).toList();
 
     return Column(
       children: [
-        const Padding(
-          padding: EdgeInsets.all(16),
+        Padding(
+          padding: const EdgeInsets.all(16),
           child: Row(
             children: [
-              Icon(Icons.calendar_today_rounded, color: Color(0xFF4FD1C5)),
-              SizedBox(width: 10),
-              Text('جدول المحاضرات', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              Icon(Icons.calendar_today_rounded, color: accent),
+              const SizedBox(width: 10),
+              Text(AppPrefs.tr('جدول المحاضرات', 'Lecture Schedule'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ],
           ),
         ),
@@ -531,8 +571,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ChoiceChip(
                   label: Text(_days[idx]),
                   selected: isSelected,
-                  selectedColor: const Color(0xFF4FD1C5),
-                  labelStyle: TextStyle(color: isSelected ? Colors.black : Colors.white, fontWeight: FontWeight.bold),
+                  selectedColor: accent,
+                  labelStyle: TextStyle(
+                    color: isSelected ? Colors.black : Theme.of(context).textTheme.bodyMedium?.color,
+                    fontWeight: FontWeight.bold,
+                  ),
                   onSelected: (_) => setState(() => _selectedDayIndex = idx),
                 ),
               );
@@ -542,14 +585,14 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 16),
         Expanded(
           child: dayLectures.isEmpty
-              ? Center(child: Text('لا توجد محاضرات مسجلة ليوم $selectedDay', style: const TextStyle(color: Colors.grey)))
+              ? Center(child: Text(AppPrefs.tr('لا توجد محاضرات مسجلة ليوم $selectedDay', 'No lectures on $selectedDay'), style: const TextStyle(color: Colors.grey)))
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   itemCount: dayLectures.length,
                   itemBuilder: (context, idx) {
                     final lec = dayLectures[idx];
                     return Card(
-                      color: const Color(0xFF181B20),
+                      color: cardBg,
                       margin: const EdgeInsets.only(bottom: 12),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       child: Padding(
@@ -557,7 +600,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(lec['time_range'] ?? '', style: const TextStyle(color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+                            Text(lec['time_range'] ?? '', style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
                             Text(lec['lecture_order'] ?? '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 8),
@@ -574,33 +617,33 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildAssignmentsTab() {
+  Widget _buildAssignmentsTab(Color cardBg) {
     return Column(
       children: [
-        const Padding(
-          padding: EdgeInsets.all(16),
+        Padding(
+          padding: const EdgeInsets.all(16),
           child: Row(
             children: [
-              Icon(Icons.push_pin_rounded, color: Colors.redAccent),
-              SizedBox(width: 10),
-              Text('التكاليف والواجبات', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              const Icon(Icons.push_pin_rounded, color: Colors.redAccent),
+              const SizedBox(width: 10),
+              Text(AppPrefs.tr('التكاليف والواجبات', 'Assignments & Tasks'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ],
           ),
         ),
         Expanded(
           child: _assignments.isEmpty
-              ? const Center(child: Text('لا توجد تكاليف حالياً 🎉', style: TextStyle(fontSize: 16, color: Colors.grey)))
+              ? Center(child: Text(AppPrefs.tr('لا توجد تكاليف حالياً 🎉', 'No assignments right now 🎉'), style: const TextStyle(fontSize: 16, color: Colors.grey)))
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   itemCount: _assignments.length,
                   itemBuilder: (context, idx) {
                     final task = _assignments[idx];
                     return Card(
-                      color: const Color(0xFF181B20),
+                      color: cardBg,
                       margin: const EdgeInsets.only(bottom: 12),
                       child: ListTile(
                         title: Text('${task['subject_name']}: ${task['title']}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text('${task['details']}\nموعد التسليم: ${task['due_date'].toString().split('T').first}'),
+                        subtitle: Text('${task['details']}\n${AppPrefs.tr('موعد التسليم:', 'Due:')} ${task['due_date'].toString().split('T').first}'),
                         isThreeLine: true,
                       ),
                     );
@@ -624,22 +667,26 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openNotifications() {
+    final bg = Theme.of(context).scaffoldBackgroundColor;
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF0F1115),
+      backgroundColor: bg,
       builder: (_) => DraggableScrollableSheet(
         initialChildSize: 0.85,
         expand: false,
         builder: (_, controller) => Column(
           children: [
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('🔔 الإشعارات والتعاميم', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(AppPrefs.tr('🔔 الإشعارات والتعاميم', '🔔 Notifications'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ),
             Expanded(
               child: _notifications.isEmpty
-                  ? const Center(child: Text('لا توجد إشعارات حالياً'))
+                  ? Center(child: Text(AppPrefs.tr('لا توجد إشعارات حالياً', 'No notifications')))
                   : ListView.builder(
                       controller: controller,
                       padding: const EdgeInsets.all(16),
@@ -647,18 +694,18 @@ class _HomeScreenState extends State<HomeScreen> {
                       itemBuilder: (_, i) {
                         final n = _notifications[i];
                         return Card(
-                          color: const Color(0xFF181B20),
+                          color: cardBg,
                           margin: const EdgeInsets.only(bottom: 12),
                           child: Padding(
                             padding: const EdgeInsets.all(14),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(n['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+                                Text(n['title'] ?? '', style: TextStyle(fontWeight: FontWeight.bold, color: accent)),
                                 const SizedBox(height: 6),
                                 Text(n['body'] ?? '', style: const TextStyle(height: 1.4)),
                                 const SizedBox(height: 8),
-                                Text('من: ${n['sender_name'] ?? 'مندوب الدفعة'}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                Text('${AppPrefs.tr('من:', 'From:')} ${n['sender_name'] ?? 'مندوب الدفعة'}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
                               ],
                             ),
                           ),
@@ -685,49 +732,81 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: const Text('الإعدادات العامة')),
-          body: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              ListTile(
-                leading: const Icon(Icons.person, color: Color(0xFF4FD1C5)),
-                title: Text(_studentName),
-                subtitle: Text('رقم القيد المقفل بهذا الهاتف: $_studentId'),
+        builder: (_) => StatefulBuilder(
+          builder: (ctx, setSettingsState) {
+            final accent = Theme.of(ctx).colorScheme.primary;
+            return Scaffold(
+              appBar: AppBar(title: Text(AppPrefs.tr('الإعدادات العامة', 'General Settings'))),
+              body: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  ListTile(
+                    leading: Icon(Icons.person, color: accent),
+                    title: Text(_studentName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(AppPrefs.tr('رقم القيد المقفل بهذا الهاتف: $_studentId', 'Locked Student ID: $_studentId')),
+                  ),
+                  const Divider(),
+                  SwitchListTile(
+                    secondary: Icon(AppPrefs.isDark ? Icons.dark_mode : Icons.light_mode, color: accent),
+                    title: Text(AppPrefs.tr('الوضع الليلي (الغامق)', 'Dark Mode')),
+                    subtitle: Text(AppPrefs.tr('تبديل مظهر التطبيق بين الغامق والفاتح', 'Switch app theme between Dark and Light')),
+                    value: AppPrefs.isDark,
+                    onChanged: (val) async {
+                      await AppPrefs.setDark(val);
+                      setSettingsState(() {});
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.language, color: Colors.purpleAccent),
+                    title: Text(AppPrefs.tr('لغة الواجهة', 'App Language')),
+                    subtitle: Text(AppPrefs.isEnglish ? 'English' : 'العربية'),
+                    trailing: SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'ar', label: Text('عربي')),
+                        ButtonSegment(value: 'en', label: Text('EN')),
+                      ],
+                      selected: {AppPrefs.isEnglish ? 'en' : 'ar'},
+                      onSelectionChanged: (selection) async {
+                        await AppPrefs.setLang(selection.first);
+                        setSettingsState(() {});
+                      },
+                    ),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.calculate, color: Colors.amber),
+                    title: Text(AppPrefs.tr('حاسبة المعدل الفصلي والتراكمي', 'GPA Calculator')),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.contact_phone, color: Colors.lightBlue),
+                    title: Text(AppPrefs.tr('دليل المناديب والروابط المهمة', 'Batch Directory & Links')),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.sync, color: Colors.teal),
+                    title: Text(AppPrefs.tr('مزامنة وتحديث البيانات الآن', 'Sync Data Now')),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _syncWithCloud(silent: false);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.admin_panel_settings, color: Colors.orange),
+                    title: Text(AppPrefs.tr('لوحة إدارة الدفعة (للمشرفين فقط)', 'Admin Dashboard (Admins Only)')),
+                    subtitle: Text(AppPrefs.tr('إرسال إشعارات، رفع ملفات، كشوفات الحضور، فك الأجهزة', 'Notifications, files, attendance, unlock devices')),
+                    onTap: () => _promptAdminPassword(),
+                  ),
+                ],
               ),
-              const Divider(),
-              ListTile(
-                leading: const Icon(Icons.calculate, color: Colors.amberAccent),
-                title: const Text('حاسبة المعدل الفصلي والتراكمي'),
-                onTap: () {
-                  Navigator.pop(context);
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.contact_phone, color: Colors.lightBlueAccent),
-                title: const Text('دليل المناديب والروابط المهمة'),
-                onTap: () {
-                  Navigator.pop(context);
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.sync, color: Colors.tealAccent),
-                title: const Text('مزامنة وتحديث البيانات الآن'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _syncWithCloud(silent: false);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.admin_panel_settings, color: Colors.amber),
-                title: const Text('لوحة إدارة الدفعة (للمشرفين فقط)'),
-                subtitle: const Text('إرسال إشعارات، رفع ملفات، كشوفات الحضور، فك الأجهزة'),
-                onTap: () => _promptAdminPassword(),
-              ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
@@ -751,16 +830,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final passCtrl = TextEditingController();
     if (!mounted) return;
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
 
     showDialog(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        backgroundColor: const Color(0xFF181B20),
-        title: const Text('رمز دخول المشرفين السري'),
+        backgroundColor: cardBg,
+        title: Text(AppPrefs.tr('رمز دخول المشرفين السري', 'Admin Secret PIN')),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('أدخل الرمز السري المخصص لمندوبي الدفعة:', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            Text(AppPrefs.tr('أدخل الرمز السري المخصص لمندوبي الدفعة:', 'Enter admin PIN:'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
             const SizedBox(height: 12),
             TextField(
               controller: passCtrl,
@@ -773,9 +854,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogCtx), child: const Text('إلغاء')),
+          TextButton(onPressed: () => Navigator.pop(dialogCtx), child: Text(AppPrefs.tr('إلغاء', 'Cancel'))),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+            style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
             onPressed: () {
               if (passCtrl.text.trim() == activePin) {
                 Navigator.pop(dialogCtx);
@@ -785,11 +866,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('الرمز السري غير صحيح! الوصول مرفوض.'), backgroundColor: Colors.red),
+                  SnackBar(content: Text(AppPrefs.tr('الرمز السري غير صحيح! الوصول مرفوض.', 'Invalid PIN! Access denied.')), backgroundColor: Colors.red),
                 );
               }
             },
-            child: const Text('دخول للوحة', style: TextStyle(fontWeight: FontWeight.bold)),
+            child: Text(AppPrefs.tr('دخول للوحة', 'Enter'), style: const TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -811,7 +892,7 @@ class AppGlobalSearchDelegate extends SearchDelegate {
   });
 
   @override
-  String get searchFieldLabel => 'ابحث في المواد، الجدول، الإشعارات، التكاليف...';
+  String get searchFieldLabel => AppPrefs.tr('ابحث في المواد، الجدول، الإشعارات...', 'Search subjects, schedule, alerts...');
 
   @override
   List<Widget>? buildActions(BuildContext context) => [
@@ -830,7 +911,7 @@ class AppGlobalSearchDelegate extends SearchDelegate {
 
   Widget _buildSearchResults() {
     if (query.trim().isEmpty) {
-      return const Center(child: Text('اكتب أي كلمة للبحث في جميع أقسام التطبيق'));
+      return Center(child: Text(AppPrefs.tr('اكتب أي كلمة للبحث في جميع أقسام التطبيق', 'Type to search across the app')));
     }
     final q = query.toLowerCase();
     final List<Widget> results = [];
@@ -840,7 +921,7 @@ class AppGlobalSearchDelegate extends SearchDelegate {
         results.add(ListTile(
           leading: const Icon(Icons.book, color: Color(0xFF4FD1C5)),
           title: Text(s['name']),
-          subtitle: const Text('قسم: المواد الدراسية'),
+          subtitle: Text(AppPrefs.tr('قسم: المواد الدراسية', 'Subjects')),
         ));
       }
     }
@@ -849,7 +930,7 @@ class AppGlobalSearchDelegate extends SearchDelegate {
         results.add(ListTile(
           leading: const Icon(Icons.notifications, color: Colors.amber),
           title: Text(n['title']),
-          subtitle: Text('قسم: الإشعارات - ${n['body']}', maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text('${n['body']}', maxLines: 1, overflow: TextOverflow.ellipsis),
         ));
       }
     }
@@ -864,7 +945,7 @@ class AppGlobalSearchDelegate extends SearchDelegate {
     }
 
     return results.isEmpty
-        ? const Center(child: Text('لا توجد نتائج مطابقة لبحثك'))
+        ? Center(child: Text(AppPrefs.tr('لا توجد نتائج مطابقة لبحثك', 'No matching results')))
         : ListView(children: results);
   }
 }
@@ -893,7 +974,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     if (text.isEmpty) return;
     if (text.contains('http://') || text.contains('https://') || text.contains('www.')) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('الروابط غير مسموحة في دردشة الدفعة'), backgroundColor: Colors.red),
+        SnackBar(content: Text(AppPrefs.tr('الروابط غير مسموحة في دردشة الدفعة', 'Links are not allowed in batch chat')), backgroundColor: Colors.red),
       );
       return;
     }
@@ -907,6 +988,10 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+    final isDark = AppPrefs.isDark;
+
     final stream = Supabase.instance.client
         .from('chat_messages')
         .stream(primaryKey: ['id'])
@@ -914,7 +999,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('دردشة الدفعة'),
+        title: Text(AppPrefs.tr('دردشة الدفعة', 'Batch Chat')),
         actions: [
           TextButton(
             onPressed: () {
@@ -922,7 +1007,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
               showDialog(
                 context: context,
                 builder: (_) => AlertDialog(
-                  title: const Text('تغيير الاسم في الدردشة'),
+                  title: Text(AppPrefs.tr('تغيير الاسم في الدردشة', 'Change Nickname')),
                   content: TextField(controller: ctrl),
                   actions: [
                     ElevatedButton(
@@ -930,13 +1015,13 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
                         if (ctrl.text.trim().isNotEmpty) setState(() => _nickname = ctrl.text.trim());
                         Navigator.pop(context);
                       },
-                      child: const Text('حفظ'),
+                      child: Text(AppPrefs.tr('حفظ', 'Save')),
                     )
                   ],
                 ),
               );
             },
-            child: const Text('تغيير الاسم', style: TextStyle(color: Color(0xFF4FD1C5))),
+            child: Text(AppPrefs.tr('تغيير الاسم', 'Edit Name'), style: TextStyle(color: accent)),
           )
         ],
       ),
@@ -960,13 +1045,15 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
                         margin: const EdgeInsets.only(bottom: 8),
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: isMe ? const Color(0xFF1E3A5F) : const Color(0xFF181B20),
+                          color: isMe
+                              ? (isDark ? const Color(0xFF1E3A5F) : const Color(0xFFCCFBF1))
+                              : cardBg,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(m['nickname'] ?? '', style: const TextStyle(fontSize: 11, color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+                            Text(m['nickname'] ?? '', style: TextStyle(fontSize: 11, color: accent, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 4),
                             Text(m['message'] ?? ''),
                           ],
@@ -980,17 +1067,20 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
           ),
           Container(
             padding: const EdgeInsets.all(8),
-            color: const Color(0xFF181B20),
+            color: cardBg,
             child: Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _msgCtrl,
-                    decoration: const InputDecoration(hintText: 'اكتب رسالة... (الروابط غير مسموحة)', border: InputBorder.none),
+                    decoration: InputDecoration(
+                      hintText: AppPrefs.tr('اكتب رسالة... (الروابط غير مسموحة)', 'Type a message... (no links)'),
+                      border: InputBorder.none,
+                    ),
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.send_rounded, color: Color(0xFF4FD1C5)),
+                  icon: Icon(Icons.send_rounded, color: accent),
                   onPressed: _sendMessage,
                 ),
               ],
