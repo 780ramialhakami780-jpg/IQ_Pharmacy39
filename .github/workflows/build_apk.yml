@@ -28,7 +28,7 @@ jobs:
           rm -f /tmp/temp.jks
 
       - name: Initialize Platforms
-        run: flutter create . --platforms=android,web --project-name iq_pharmacy39
+        run: flutter create . --platforms=android,web --org ye.su --project-name iq_pharmacy39
 
       - name: Get Dependencies
         run: flutter pub get
@@ -53,6 +53,7 @@ jobs:
           tag_name: latest
           name: IQ_Pharmacy39 Official Release
           files: build/app/outputs/flutter-apk/app-*-release.apk
+          overwrite_files: true
 
       - name: Upload Web App for iOS
         uses: actions/upload-pages-artifact@v3
