@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'subject_screen.dart';
 import 'admin_screen.dart';
+import 'gpa_screen.dart';
+import 'directory_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,11 +21,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _studentId = '';
   bool _isAdmin = false;
   bool _isSyncing = false;
+  String _urgentBanner = '';
 
   List<dynamic> _subjects = [];
   List<dynamic> _schedule = [];
   List<dynamic> _assignments = [];
   List<dynamic> _notifications = [];
+  List<dynamic> _myAttendance = [];
 
   final List<String> _days = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
   int _selectedDayIndex = 0;
@@ -41,11 +45,13 @@ class _HomeScreenState extends State<HomeScreen> {
       _studentName = prefs.getString('full_name') ?? 'طالب صيدلة';
       _studentId = prefs.getString('student_id') ?? '';
       _isAdmin = prefs.getBool('is_admin') ?? false;
+      _urgentBanner = prefs.getString('cache_urgent_banner') ?? '';
 
       _subjects = jsonDecode(prefs.getString('cache_subjects') ?? '[]');
       _schedule = jsonDecode(prefs.getString('cache_schedule') ?? '[]');
       _assignments = jsonDecode(prefs.getString('cache_assignments') ?? '[]');
       _notifications = jsonDecode(prefs.getString('cache_notifications') ?? '[]');
+      _myAttendance = jsonDecode(prefs.getString('cache_my_attendance') ?? '[]');
     });
   }
 
@@ -60,28 +66,52 @@ class _HomeScreenState extends State<HomeScreen> {
       final assignmentsData = await client.from('assignments').select().order('due_date');
       final notificationsData = await client.from('notifications').select().order('created_at', ascending: false);
 
+      String bannerText = '';
+      try {
+        final bannerRes = await client
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'urgent_banner')
+            .maybeSingle();
+        if (bannerRes != null && bannerRes['value'] != null) {
+          bannerText = bannerRes['value'].toString().trim();
+        }
+      } catch (_) {}
+
       bool cloudAdmin = _isAdmin;
+      List<dynamic> attendanceData = _myAttendance;
       if (_studentId.isNotEmpty) {
         final me = await client.from('students').select('is_admin').eq('student_id', _studentId).maybeSingle();
         if (me != null) {
           cloudAdmin = me['is_admin'] ?? false;
         }
+        try {
+          attendanceData = await client
+              .from('attendance')
+              .select()
+              .eq('student_id', _studentId)
+              .order('created_at', ascending: false);
+        } catch (_) {}
       }
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_admin', cloudAdmin);
+      await prefs.setString('cache_urgent_banner', bannerText);
       await prefs.setString('cache_subjects', jsonEncode(subjectsData));
       await prefs.setString('cache_schedule', jsonEncode(scheduleData));
       await prefs.setString('cache_assignments', jsonEncode(assignmentsData));
       await prefs.setString('cache_notifications', jsonEncode(notificationsData));
+      await prefs.setString('cache_my_attendance', jsonEncode(attendanceData));
 
       if (!mounted) return;
       setState(() {
         _isAdmin = cloudAdmin;
+        _urgentBanner = bannerText;
         _subjects = subjectsData;
         _schedule = scheduleData;
         _assignments = assignmentsData;
         _notifications = notificationsData;
+        _myAttendance = attendanceData;
       });
 
       if (!silent && mounted) {
@@ -131,6 +161,33 @@ class _HomeScreenState extends State<HomeScreen> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (_urgentBanner.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.redAccent.withOpacity(0.16),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.redAccent),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 26),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('تنبيه عاجل للدفعة', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 12)),
+                        const SizedBox(height: 2),
+                        Text(_urgentBanner, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
           Row(
             children: [
               Expanded(
@@ -165,6 +222,12 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Row(
               children: [
                 _topActionBtn(Icons.qr_code_2_rounded, 'كودي (QR)', () => _showMyStudentQR()),
+                _topActionBtn(Icons.calculate_rounded, 'حاسبة المعدل', () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
+                }),
+                _topActionBtn(Icons.contact_phone_rounded, 'دليل الدفعة', () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
+                }),
                 _topActionBtn(Icons.search_rounded, 'بحث', () => _openGlobalSearch()),
                 _topActionBtn(Icons.notifications_active_rounded, 'الإشعارات', () => _openNotifications(), badge: _notifications.length),
                 _topActionBtn(
@@ -209,33 +272,56 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 14),
 
-          InkWell(
-            onTap: () => setState(() => _currentIndex = 1),
-            borderRadius: BorderRadius.circular(14),
-            child: Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: const Color(0xFF181B20),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white10),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.event_note_rounded, color: Color(0xFF4FD1C5), size: 28),
-                  const SizedBox(width: 12),
-                  Expanded(
+          Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  onTap: () => setState(() => _currentIndex = 1),
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF181B20),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white10),
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('جدول المحاضرات (${_schedule.length} محاضرة مسجلة)', style: const TextStyle(fontWeight: FontWeight.bold)),
-                        const Text('اضغط لعرض جدول الأسبوع والقاعات', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                        const Icon(Icons.event_note_rounded, color: Color(0xFF4FD1C5), size: 24),
+                        const SizedBox(height: 8),
+                        Text('الجدول (${_schedule.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        const Text('المحاضرات والقاعات', style: TextStyle(fontSize: 11, color: Colors.grey)),
                       ],
                     ),
                   ),
-                  const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: Colors.grey),
-                ],
+                ),
               ),
-            ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: InkWell(
+                  onTap: () => _showMyAttendanceDetails(),
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF181B20),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.fact_check_rounded, color: Colors.greenAccent, size: 24),
+                        const SizedBox(height: 8),
+                        Text('سجل حضوري (${_myAttendance.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        const Text('اضغط لعرض التفاصيل', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 20),
 
@@ -279,6 +365,53 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             }),
         ],
+      ),
+    );
+  }
+
+  void _showMyAttendanceDetails() {
+    final Map<String, int> grouped = {};
+    for (var record in _myAttendance) {
+      final code = (record['session_code'] ?? 'عام').toString();
+      grouped[code] = (grouped[code] ?? 0) + 1;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF181B20),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('سجل الحضور الشخصي (QR)', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+                Chip(label: Text('الإجمالي: ${_myAttendance.length}')),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (_myAttendance.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 20),
+                child: Center(child: Text('لم يتم تسجيل أي حضور لك بعد. اعرض كود QR الخاص بك للمندوب في المحاضرة.', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey))),
+              )
+            else
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: grouped.entries.map((e) => ListTile(
+                    leading: const Icon(Icons.check_circle, color: Colors.greenAccent),
+                    title: Text('كود الجلسة / المادة: ${e.key}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    trailing: Text('${e.value} محاضرة', style: const TextStyle(color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold)),
+                  )).toList(),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -564,6 +697,22 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const Divider(),
               ListTile(
+                leading: const Icon(Icons.calculate, color: Colors.amberAccent),
+                title: const Text('حاسبة المعدل الفصلي والتراكمي'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.contact_phone, color: Colors.lightBlueAccent),
+                title: const Text('دليل المناديب والروابط المهمة'),
+                onTap: () {
+                  Navigator.pop(context);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
+                },
+              ),
+              ListTile(
                 leading: const Icon(Icons.sync, color: Colors.tealAccent),
                 title: const Text('مزامنة وتحديث البيانات الآن'),
                 onTap: () {
@@ -574,7 +723,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ListTile(
                 leading: const Icon(Icons.admin_panel_settings, color: Colors.amber),
                 title: const Text('لوحة إدارة الدفعة (للمشرفين فقط)'),
-                subtitle: const Text('إرسال إشعارات، رفع ملفات، تحضير QR، تعديل الجدول'),
+                subtitle: const Text('إرسال إشعارات، رفع ملفات، كشوفات الحضور، فك الأجهزة'),
                 onTap: () => _promptAdminPassword(),
               ),
             ],
