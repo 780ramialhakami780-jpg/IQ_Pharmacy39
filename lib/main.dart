@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'app_prefs.dart';
 import 'home_screen.dart';
 
 const String supabaseUrl = 'https://stvavavzjrcxcivxykfv.supabase.co';
@@ -13,6 +14,7 @@ const String supabaseAnonKey = 'sb_publishable_2D5B4SJgPAwqZqqgpiFaMA_HzTlka-k';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  await AppPrefs.load();
   final prefs = await SharedPreferences.getInstance();
   final bool isRegistered = prefs.getBool('is_registered') ?? false;
 
@@ -25,26 +27,58 @@ class IQPharmacyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'IQ_Pharmacy39',
-      debugShowCheckedModeBanner: false,
-      locale: const Locale('ar', 'YE'),
-      supportedLocales: const [Locale('ar', 'YE'), Locale('en', 'US')],
-      localizationsDelegates: const [
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0F1115),
-        primaryColor: const Color(0xFF2B6CB0),
-        cardColor: const Color(0xFF181B20),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF4FD1C5),
-          secondary: Color(0xFF2B6CB0),
-        ),
-      ),
-      home: isRegistered ? const HomeScreen() : const StudentRegistrationScreen(),
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: AppPrefs.themeNotifier,
+      builder: (_, currentTheme, __) {
+        return ValueListenableBuilder<Locale>(
+          valueListenable: AppPrefs.localeNotifier,
+          builder: (_, currentLocale, __) {
+            return MaterialApp(
+              title: 'IQ_Pharmacy39',
+              debugShowCheckedModeBanner: false,
+              themeMode: currentTheme,
+              locale: currentLocale,
+              supportedLocales: const [Locale('ar'), Locale('en')],
+              localizationsDelegates: const [
+                GlobalMaterialLocalizations.delegate,
+                GlobalWidgetsLocalizations.delegate,
+                GlobalCupertinoLocalizations.delegate,
+              ],
+              theme: ThemeData.light(useMaterial3: true).copyWith(
+                scaffoldBackgroundColor: const Color(0xFFF3F5F8),
+                primaryColor: const Color(0xFF0D9488),
+                cardColor: Colors.white,
+                colorScheme: const ColorScheme.light(
+                  primary: Color(0xFF0D9488),
+                  secondary: Color(0xFF2B6CB0),
+                  surface: Colors.white,
+                ),
+                appBarTheme: const AppBarTheme(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Color(0xFF0F172A),
+                  elevation: 0,
+                ),
+              ),
+              darkTheme: ThemeData.dark(useMaterial3: true).copyWith(
+                scaffoldBackgroundColor: const Color(0xFF0F1115),
+                primaryColor: const Color(0xFF2B6CB0),
+                cardColor: const Color(0xFF181B20),
+                colorScheme: const ColorScheme.dark(
+                  primary: Color(0xFF4FD1C5),
+                  secondary: Color(0xFF2B6CB0),
+                  surface: Color(0xFF181B20),
+                ),
+                appBarTheme: const AppBarTheme(
+                  backgroundColor: Color(0xFF181B20),
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                ),
+              ),
+              home: isRegistered ? const HomeScreen() : const StudentRegistrationScreen(),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -167,33 +201,36 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+
     return Scaffold(
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24.0),
-            child: _foundStudent == null ? _buildInputStep() : _buildConfirmationStep(),
+            child: _foundStudent == null ? _buildInputStep(cardBg, accent) : _buildConfirmationStep(cardBg, accent),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildInputStep() {
+  Widget _buildInputStep(Color cardBg, Color accent) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: const Color(0xFF181B20),
+            color: cardBg,
             shape: BoxShape.circle,
-            border: Border.all(color: const Color(0xFF4FD1C5), width: 2),
+            border: Border.all(color: accent, width: 2),
           ),
-          child: const Icon(Icons.school_rounded, size: 60, color: Color(0xFF4FD1C5)),
+          child: Icon(Icons.school_rounded, size: 60, color: accent),
         ),
         const SizedBox(height: 24),
-        const Text('IQ_Pharmacy39', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white)),
+        const Text('IQ_Pharmacy39', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         const Text(
           'أدخل رقم قيدك الجامعي للتعرف على حسابك\n(تتطلب هذه الخطوة اتصالاً بالإنترنت لمرة واحدة فقط)',
@@ -209,11 +246,11 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
           decoration: InputDecoration(
             hintText: 'رقم القيد الجامعي',
             filled: true,
-            fillColor: const Color(0xFF181B20),
+            fillColor: cardBg,
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Color(0xFF4FD1C5), width: 1.5),
+              borderSide: BorderSide(color: accent, width: 1.5),
             ),
           ),
         ),
@@ -236,7 +273,7 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
           child: ElevatedButton(
             onPressed: _isLoading ? null : _verifyStudentId,
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4FD1C5),
+              backgroundColor: accent,
               foregroundColor: Colors.black,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             ),
@@ -249,28 +286,28 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
     );
   }
 
-  Widget _buildConfirmationStep() {
+  Widget _buildConfirmationStep(Color cardBg, Color accent) {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: const Color(0xFF181B20),
+        color: cardBg,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white12),
+        border: Border.all(color: Colors.grey.withOpacity(0.2)),
       ),
       child: Column(
         children: [
-          const Icon(Icons.verified_user_rounded, size: 64, color: Color(0xFF4FD1C5)),
+          Icon(Icons.verified_user_rounded, size: 64, color: accent),
           const SizedBox(height: 16),
           const Text('مرحباً بك', style: TextStyle(fontSize: 16, color: Colors.grey)),
           const SizedBox(height: 8),
-          Text(_foundStudent!['full_name'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+          Text(_foundStudent!['full_name'], textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          Text('رقم القيد: ${_foundStudent!['student_id']}', style: const TextStyle(fontSize: 14, color: Color(0xFF4FD1C5))),
+          Text('رقم القيد: ${_foundStudent!['student_id']}', style: TextStyle(fontSize: 14, color: accent, fontWeight: FontWeight.bold)),
           const SizedBox(height: 20),
           const Text(
             'تنبيه: عند الضغط على "متابعة للتطبيق" سيتم ربط رقم قيدك بهذا الهاتف نهائياً ولن يتمكن أي شخص آخر من استخدامه.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: Colors.amberAccent, height: 1.4),
+            style: TextStyle(fontSize: 12, color: Colors.orange, height: 1.4),
           ),
           const SizedBox(height: 28),
           SizedBox(
@@ -279,7 +316,7 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
             child: ElevatedButton(
               onPressed: _isLoading ? null : _confirmAndLockAccount,
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF4FD1C5),
+                backgroundColor: accent,
                 foregroundColor: Colors.black,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
