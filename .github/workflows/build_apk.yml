@@ -19,11 +19,14 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Official Signing Certificate
+      - name: Restore Permanent Signing Certificate
         run: |
           mkdir -p ~/.android
           rm -f ~/.android/debug.keystore
-          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=IQ Pharmacy 39, OU=Scientific Committee, O=Sanaa University, L=Sanaa, C=YE"
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ~/.android/debug.keystore
+          keytool -storepasswd -keystore ~/.android/debug.keystore -storepass "${{ secrets.KEYSTORE_PASSWORD }}" -new android
+          keytool -keypasswd -alias "${{ secrets.KEY_ALIAS }}" -keypass "${{ secrets.KEY_PASSWORD }}" -new android -keystore ~/.android/debug.keystore -storepass android
+          keytool -changealias -alias "${{ secrets.KEY_ALIAS }}" -destalias androiddebugkey -keystore ~/.android/debug.keystore -storepass android
 
       - name: Initialize Platforms
         run: flutter create . --platforms=android,web --project-name iq_pharmacy39
