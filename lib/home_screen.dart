@@ -64,6 +64,19 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  String _formattedTodayDate() {
+    final now = DateTime.now();
+    if (AppPrefs.isEnglish) {
+      const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return '${weekDays[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
+    } else {
+      const weekDays = ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد'];
+      const months = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+      return '${weekDays[now.weekday - 1]}، ${now.day} ${months[now.month - 1]}';
+    }
+  }
+
   void _startBannerAutoSlide() {
     _bannerTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!mounted || _announcements.length <= 1 || _bannerDismissed) return;
@@ -319,21 +332,53 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 14),
           ],
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text(AppPrefs.tr('مرحباً بك،', 'Welcome,'), style: const TextStyle(color: Colors.grey, fontSize: 13)),
-              Text(
-                _studentName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(AppPrefs.tr('مرحباً بك،', 'Welcome,'), style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                    Text(
+                      _studentName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              InkWell(
+                onTap: () => setState(() => _currentIndex = 1),
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: cardBg,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: borderCol),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.calendar_today_rounded, size: 13, color: accent),
+                      const SizedBox(width: 6),
+                      Text(
+                        _formattedTodayDate(),
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
           const SizedBox(height: 12),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(
               children: [
                 _topActionBtn(Icons.support_agent_rounded, AppPrefs.tr('الدعم والتواصل', 'Support'), () => _openSupportContactsSheet(), cardBg, accent),
@@ -358,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
 
           if (AppPrefs.showAnnouncements) ...[
             _buildAnnouncementsSection(cardBg, accent, radius),
@@ -943,30 +988,41 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _topActionBtn(IconData icon, String label, VoidCallback onTap, Color cardBg, Color accent, {int badge = 0}) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: cardBg,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey.withOpacity(0.2)),
-          ),
-          child: Row(
+      padding: const EdgeInsets.symmetric(horizontal: 5),
+      child: Tooltip(
+        message: label,
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: Stack(
+            clipBehavior: Clip.none,
             children: [
-              Icon(icon, size: 18, color: accent),
-              const SizedBox(width: 6),
-              Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-              if (badge > 0) ...[
-                const SizedBox(width: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(color: Colors.redAccent, borderRadius: BorderRadius.circular(10)),
-                  child: Text('$badge', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white)),
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: cardBg,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.grey.withOpacity(0.22)),
                 ),
-              ]
+                child: Icon(icon, size: 20, color: accent),
+              ),
+              if (badge > 0)
+                Positioned(
+                  top: -3,
+                  left: -3,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '$badge',
+                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),
@@ -1792,13 +1848,15 @@ class _HomeScreenState extends State<HomeScreen> {
                             _syncWithCloud(silent: false);
                           },
                         ),
-                        const Divider(height: 1),
-                        ListTile(
-                          leading: const Icon(Icons.admin_panel_settings, color: Colors.orange),
-                          title: Text(AppPrefs.tr('لوحة إدارة الدفعة (للمشرفين فقط)', 'Admin Dashboard (Admins Only)')),
-                          subtitle: Text(AppPrefs.tr('إدارة الإعلانات، التواصل، الإشعارات، الملفات، كشوفات الحضور', 'Announcements, support, alerts, files, attendance')),
-                          onTap: () => _promptAdminPassword(),
-                        ),
+                        if (_isAdmin) ...[
+                          const Divider(height: 1),
+                          ListTile(
+                            leading: const Icon(Icons.admin_panel_settings, color: Colors.orange),
+                            title: Text(AppPrefs.tr('لوحة إدارة الدفعة (للمشرفين فقط)', 'Admin Dashboard (Admins Only)')),
+                            subtitle: Text(AppPrefs.tr('إدارة الإعلانات، التواصل، الإشعارات، الملفات، كشوفات الحضور', 'Announcements, support, alerts, files, attendance')),
+                            onTap: () => _promptAdminPassword(),
+                          ),
+                        ],
                       ],
                     ),
                   ),
