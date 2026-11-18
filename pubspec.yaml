@@ -1,7 +1,7 @@
 name: iq_pharmacy39
 description: تطبيق دفعة 39 صيدلة اكلينيكي
 publish_to: 'none'
-version: 1.1.0+2
+version: 1.2.0+100
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
