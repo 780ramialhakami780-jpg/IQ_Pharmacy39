@@ -314,7 +314,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 14),
           ],
-          // الترحيب واسم الطالب (تم حذف الشارة الصفراء بناءً على طلبك)
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -328,7 +327,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          // شريط الأزرار العلوي متضمناً زر التواصل المباشر مع المطورين والمناديب
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
@@ -357,7 +355,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 16),
 
-          // شريط الإعلانات التفاعلي مكان البطاقة الزرقاء
           if (AppPrefs.showAnnouncements) ...[
             _buildAnnouncementsSection(cardBg, accent, radius),
             const SizedBox(height: 14),
@@ -639,7 +636,6 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
           ),
-          // زر إغلاق X في الزاوية
           Positioned(
             top: 8,
             left: 8,
@@ -652,7 +648,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
-          // مؤشر النقاط في الأسفل
           if (_announcements.length > 1)
             Positioned(
               bottom: 7,
@@ -750,7 +745,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // نافذة التواصل المباشر مع المطورين والمناديب داخل التطبيق
   void _openSupportContactsSheet() {
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
@@ -765,14 +759,14 @@ class _HomeScreenState extends State<HomeScreen> {
         maxChildSize: 0.9,
         minChildSize: 0.4,
         expand: false,
-        builder: (_, scrollCtrl) => FutureBuilder<List<dynamic>>(
+        builder: (_, scrollCtrl) => FutureBuilder(
           future: Supabase.instance.client
               .from('support_contacts')
               .select()
               .eq('is_active', true)
               .order('sort_order'),
           builder: (context, snapshot) {
-            final contacts = snapshot.data ?? [];
+            final contacts = (snapshot.data as List<dynamic>?) ?? [];
             final amISupport = _isAdmin || contacts.any((c) => c['student_id'].toString() == _studentId);
 
             return ListView(
@@ -1221,7 +1215,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // شاشة الإعدادات الشاملة
   void _openGeneralSettings() {
     final emailCtrl = TextEditingController(text: _universityEmail);
     bool savingEmail = false;
@@ -1240,7 +1233,6 @@ class _HomeScreenState extends State<HomeScreen> {
               body: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  // 1. بطاقة الحساب وربط البريد الجامعي
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1335,7 +1327,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  // 2. الخلفيات والسمات
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1434,7 +1425,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  // 3. الخط والحجم
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1494,7 +1484,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  // 4. عرض وترتيب المواد (بالأسهم فقط دون أي زر إخفاء)
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1562,7 +1551,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                                   ),
                                 ),
-                                // زر السهم للأعلى فقط
                                 IconButton(
                                   icon: Icon(Icons.arrow_drop_up_rounded, size: 30, color: isFirst ? Colors.grey.withOpacity(0.3) : Colors.white),
                                   onPressed: isFirst
@@ -1576,7 +1564,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                           setSettingsState(() {});
                                         },
                                 ),
-                                // زر السهم للأسفل فقط
                                 IconButton(
                                   icon: Icon(Icons.arrow_drop_down_rounded, size: 30, color: isLast ? Colors.grey.withOpacity(0.3) : Colors.white),
                                   onPressed: isLast
@@ -1599,7 +1586,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  // 5. الشكل والواجهة والقفل واللغة
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1717,7 +1703,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  // 6. النسخ الاحتياطي وإعادة الضبط
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -1789,7 +1774,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  // 7. اختصارات ولوحة الإدارة السرية
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2126,7 +2110,6 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
   }
 }
 
-// شاشة المحادثة الخاصة المباشرة مع المطور أو المندوب داخل التطبيق
 class DirectSupportChatScreen extends StatefulWidget {
   final String myId;
   final String myName;
@@ -2188,11 +2171,11 @@ class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: StreamBuilder<List>>(
+            child: StreamBuilder(
               stream: stream,
               builder: (context, snapshot) {
                 if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                final allMsgs = snapshot.data!;
+                final allMsgs = (snapshot.data as List<dynamic>?) ?? [];
                 final threadMsgs = allMsgs.where((m) {
                   final s = (m['sender_id'] ?? '').toString();
                   final r = (m['receiver_id'] ?? '').toString();
@@ -2269,7 +2252,6 @@ class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
   }
 }
 
-// صندوق وارد الرسائل للمطورين والمناديب للرد على الطلاب
 class SupportInboxScreen extends StatelessWidget {
   final String myId;
   final String myName;
@@ -2287,11 +2269,12 @@ class SupportInboxScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(title: Text(AppPrefs.tr('صندوق رسائل الطلاب', 'Student Support Inbox'))),
-      body: StreamBuilder<List>>(
+      body: StreamBuilder(
         stream: stream,
         builder: (context, snapshot) {
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-          final msgs = snapshot.data!.where((m) => m['receiver_id'] == myId || m['sender_id'] == myId).toList();
+          final rawList = (snapshot.data as List<dynamic>?) ?? [];
+          final msgs = rawList.where((m) => m['receiver_id'] == myId || m['sender_id'] == myId).toList();
 
           final Map<String, Map<String, dynamic>> conversations = {};
           for (var m in msgs) {
