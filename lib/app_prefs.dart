@@ -8,28 +8,23 @@ class AppPrefs {
   static final localeNotifier = ValueNotifier<Locale>(const Locale('ar'));
   static final settingsNotifier = ValueNotifier<int>(0);
 
-  // السمات والخلفيات
-  static String themePreset = 'dark'; // dark, amoled, light, pharmacy
-  static String wallpaperType = 'none'; // none, preset, gallery
+  static String themePreset = 'dark';
+  static String wallpaperType = 'none';
   static String wallpaperValue = '';
   static double wallpaperDim = 0.72;
 
-  // الخطوط والأحجام
-  static String fontFamily = 'system'; // system, cairo, tajawal, amiri, ruqaa, almarai
+  static String fontFamily = 'system';
   static double fontScale = 1.0;
 
-  // عرض وترتيب المواد
   static bool subjectsGrid = false;
   static List<String> subjectOrder = [];
 
-  // الشكل وعناصر الرئيسية
   static double cardRadius = 14.0;
   static bool showAnnouncements = true;
   static bool showQuickCards = true;
   static bool quizHaptics = true;
   static bool dataSaver = false;
 
-  // قفل التطبيق
   static bool pinEnabled = false;
   static String appPin = '';
 
@@ -188,20 +183,27 @@ class AppPrefs {
   }
 
   static TextTheme applyFontToTextTheme(TextTheme base) {
+    String? familyName;
     switch (fontFamily) {
       case 'cairo':
-        return GoogleFonts.cairoTextTheme(base);
+        familyName = GoogleFonts.cairo().fontFamily;
+        break;
       case 'tajawal':
-        return GoogleFonts.tajawalTextTheme(base);
+        familyName = GoogleFonts.tajawal().fontFamily;
+        break;
       case 'amiri':
-        return GoogleFonts.amiriTextTheme(base);
+        familyName = GoogleFonts.amiri().fontFamily;
+        break;
       case 'ruqaa':
-        return GoogleFonts.arefRuqaaTextTheme(base);
+        familyName = GoogleFonts.arefRuqaa().fontFamily;
+        break;
       case 'almarai':
-        return GoogleFonts.almaraiTextTheme(base);
+        familyName = GoogleFonts.almarai().fontFamily;
+        break;
       default:
         return base;
     }
+    return base.apply(fontFamily: familyName);
   }
 
   static String exportBackupJson() {
