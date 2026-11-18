@@ -246,31 +246,36 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final cardBg = Theme.of(context).cardColor;
-    final accent = Theme.of(context).colorScheme.primary;
+    return ValueListenableBuilder<int>(
+      valueListenable: AppPrefs.settingsNotifier,
+      builder: (context, _, __) {
+        final cardBg = Theme.of(context).cardColor;
+        final accent = Theme.of(context).colorScheme.primary;
 
-    final pages = [
-      _buildDashboardTab(cardBg, accent),
-      _buildScheduleTab(cardBg, accent),
-      _buildAssignmentsTab(cardBg),
-    ];
+        final pages = [
+          _buildDashboardTab(cardBg, accent),
+          _buildScheduleTab(cardBg, accent),
+          _buildAssignmentsTab(cardBg),
+        ];
 
-    return _wrapWithWallpaper(
-      Scaffold(
-        body: SafeArea(child: pages[_currentIndex]),
-        bottomNavigationBar: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) => setState(() => _currentIndex = index),
-          backgroundColor: cardBg,
-          selectedItemColor: accent,
-          unselectedItemColor: Colors.grey,
-          items: [
-            BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
-            BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
-            BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
-          ],
-        ),
-      ),
+        return _wrapWithWallpaper(
+          Scaffold(
+            body: SafeArea(child: pages[_currentIndex]),
+            bottomNavigationBar: BottomNavigationBar(
+              currentIndex: _currentIndex,
+              onTap: (index) => setState(() => _currentIndex = index),
+              backgroundColor: cardBg,
+              selectedItemColor: accent,
+              unselectedItemColor: Colors.grey,
+              items: [
+                BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
+                BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
+                BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
