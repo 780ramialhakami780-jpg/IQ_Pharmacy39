@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:image_picker/image_picker.dart';
 
 class AdminScreen extends StatefulWidget {
   final String adminName;
@@ -16,6 +19,9 @@ class _AdminScreenState extends State<AdminScreen> {
   final _client = Supabase.instance.client;
   List<dynamic> _subjects = [];
   List<dynamic> _attendance = [];
+  List<dynamic> _announcements = [];
+  List<dynamic> _supportContacts = [];
+  Map<String, String> _studentEmails = {};
   bool _isLoading = false;
 
   @override
@@ -28,10 +34,34 @@ class _AdminScreenState extends State<AdminScreen> {
     try {
       final subjs = await _client.from('subjects').select().order('sort_order');
       final att = await _client.from('attendance').select().order('created_at', ascending: false).limit(500);
+      List<dynamic> anns = [];
+      List<dynamic> supps = [];
+      final Map<String, String> emailMap = {};
+
+      try {
+        anns = await _client.from('announcements').select().order('created_at', ascending: false);
+      } catch (_) {}
+
+      try {
+        supps = await _client.from('support_contacts').select().order('sort_order');
+      } catch (_) {}
+
+      try {
+        final studs = await _client.from('students').select('student_id, university_email');
+        for (var s in studs) {
+          if (s['university_email'] != null && s['university_email'].toString().isNotEmpty) {
+            emailMap[s['student_id'].toString()] = s['university_email'].toString();
+          }
+        }
+      } catch (_) {}
+
       if (!mounted) return;
       setState(() {
         _subjects = subjs;
         _attendance = att;
+        _announcements = anns;
+        _supportContacts = supps;
+        _studentEmails = emailMap;
       });
     } catch (_) {}
   }
@@ -55,11 +85,11 @@ class _AdminScreenState extends State<AdminScreen> {
             isScrollable: true,
             indicatorColor: Color(0xFF4FD1C5),
             tabs: [
-              Tab(text: 'إشعارات وتنبيه عاجل'),
+              Tab(text: 'الإعلانات والتنبيهات'),
               Tab(text: 'المواد والملفات'),
               Tab(text: 'بنك الأسئلة'),
               Tab(text: 'الجدول وكشف الحضور'),
-              Tab(text: 'الأجهزة والدليل'),
+              Tab(text: 'الدعم والأجهزة والدليل'),
               Tab(text: 'الرمز السري'),
             ],
           ),
@@ -80,8 +110,13 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 1. تبويب الشريط العاجل + إرسال إشعار + إضافة تكليف
+  // 1. تبويب شريط الإعلانات المصوّرة + الشريط العاجل + الإشعارات + التكاليف
   Widget _buildNotificationsAndTasksTab() {
+    final annTitleCtrl = TextEditingController();
+    final annDescCtrl = TextEditingController();
+    final annImgUrlCtrl = TextEditingController();
+    final annActionUrlCtrl = TextEditingController();
+
     final urgentCtrl = TextEditingController();
     final notifTitle = TextEditingController();
     final notifBody = TextEditingController();
@@ -94,9 +129,98 @@ class _AdminScreenState extends State<AdminScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('🚨 شريط التنبيه العاجل أعلى الرئيسية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.redAccent)),
+        const Text('🖼️ نشر إعلان مصوّر في الشريط المتحرك (Carousel)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
         const SizedBox(height: 6),
-        const Text('يظهر بلون أحمر بارز فور فتح التطبيق (مثل: نقل محاضرة أو اعتذار دكتور).', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const Text('يظهر أعلى الواجهة الرئيسية مع إمكانية التكبير وزر "فتح الرابط" الاختياري.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 10),
+        TextField(controller: annTitleCtrl, decoration: const InputDecoration(labelText: 'عنوان الإعلان (إلزامي)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(controller: annDescCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'وصف تفصيلي يظهر عند تكبير الإعلان (اختياري)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: annImgUrlCtrl,
+                decoration: const InputDecoration(labelText: 'رابط الصورة أو ارفعها من الاستوديو', border: OutlineInputBorder()),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12)),
+              icon: const Icon(Icons.upload_rounded),
+              label: const Text('رفع صورة'),
+              onPressed: () async {
+                final picker = ImagePicker();
+                final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+                if (picked == null) return;
+                setState(() => _isLoading = true);
+                try {
+                  final bytes = await picked.readAsBytes();
+                  final ext = picked.name.split('.').last;
+                  final fileName = 'ann_${DateTime.now().millisecondsSinceEpoch}.$ext';
+                  await _client.storage.from('announcements').uploadBinary(fileName, bytes);
+                  final publicUrl = _client.storage.from('announcements').getPublicUrl(fileName);
+                  annImgUrlCtrl.text = publicUrl;
+                  _showMsg('تم رفع الصورة بنجاح ✓');
+                } catch (e) {
+                  _showMsg('تعذر رفع الصورة، تأكد من إعدادات Storage في Supabase', isError: true);
+                } finally {
+                  if (mounted) setState(() => _isLoading = false);
+                }
+              },
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        TextField(controller: annActionUrlCtrl, decoration: const InputDecoration(labelText: 'رابط خارجي لزر "فتح الرابط" (اختياري)', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+          icon: const Icon(Icons.add_photo_alternate_rounded),
+          label: const Text('نشر الإعلان في التطبيق', style: TextStyle(fontWeight: FontWeight.bold)),
+          onPressed: () async {
+            if (annTitleCtrl.text.trim().isEmpty || annImgUrlCtrl.text.trim().isEmpty) {
+              _showMsg('يرجى إدخال عنوان الإعلان وصورته', isError: true);
+              return;
+            }
+            setState(() => _isLoading = true);
+            try {
+              await _client.from('announcements').insert({
+                'title': annTitleCtrl.text.trim(),
+                'description': annDescCtrl.text.trim(),
+                'image_url': annImgUrlCtrl.text.trim(),
+                'action_url': annActionUrlCtrl.text.trim(),
+                'is_active': true,
+              });
+              await _fetchInitialData();
+              _showMsg('تم نشر الإعلان للدفعة بنجاح ✓');
+            } catch (_) {
+              _showMsg('فشل نشر الإعلان', isError: true);
+            } finally {
+              if (mounted) setState(() => _isLoading = false);
+            }
+          },
+        ),
+        if (_announcements.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          const Text('الإعلانات النشطة حالياً:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+          ..._announcements.map((a) => ListTile(
+                dense: true,
+                leading: const Icon(Icons.image_rounded, color: Color(0xFF4FD1C5)),
+                title: Text(a['title'] ?? ''),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                  onPressed: () async {
+                    await _client.from('announcements').delete().eq('id', a['id']);
+                    await _fetchInitialData();
+                    _showMsg('تم حذف الإعلان');
+                  },
+                ),
+              )),
+        ],
+        const Divider(height: 36),
+        const Text('🚨 شريط التنبيه العاجل أعلى الرئيسية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.redAccent)),
         const SizedBox(height: 10),
         TextField(
           controller: urgentCtrl,
@@ -374,7 +498,7 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 4. تبويب الجدول + تصدير كشوفات الحضور
+  // 4. تبويب الجدول + تصدير كشوفات الحضور متضمنة البريد الجامعي للكلية
   Widget _buildScheduleAndAttendanceTab() {
     String selectedDay = 'السبت';
     final orderCtrl = TextEditingController(text: 'المحاضرة الأولى');
@@ -445,17 +569,19 @@ class _AdminScreenState extends State<AdminScreen> {
                 Text('✅ كشف الحضور (${filteredAtt.length})', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.greenAccent)),
                 ElevatedButton.icon(
                   icon: const Icon(Icons.copy_all, size: 18),
-                  label: const Text('نسخ الكشف لـ Excel'),
+                  label: const Text('نسخ الكشف للكلية / Excel'),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                   onPressed: filteredAtt.isEmpty
                       ? null
                       : () {
-                          final buffer = StringBuffer('رقم القيد\tالاسم الكامل\tكود الجلسة\n');
+                          final buffer = StringBuffer('رقم القيد\tالاسم الكامل\tالبريد الجامعي\tكود الجلسة\n');
                           for (var a in filteredAtt) {
-                            buffer.writeln('${a['student_id']}\t${a['full_name']}\t${a['session_code']}');
+                            final sid = (a['student_id'] ?? '').toString();
+                            final email = _studentEmails[sid] ?? 'غير مرتبط';
+                            buffer.writeln('$sid\t${a['full_name']}\t$email\t${a['session_code']}');
                           }
                           Clipboard.setData(ClipboardData(text: buffer.toString()));
-                          _showMsg('تم نسخ الكشف (${filteredAtt.length} طالب) جاهزاً للصق في Excel أو واتساب');
+                          _showMsg('تم نسخ الكشف (${filteredAtt.length} طالب) متضمناً البريد الجامعي جاهزاً لـ Excel');
                         },
                 ),
               ],
@@ -472,20 +598,33 @@ class _AdminScreenState extends State<AdminScreen> {
             if (filteredAtt.isEmpty)
               const Text('لا توجد سجلات حضور مسجلة حالياً', style: TextStyle(color: Colors.grey))
             else
-              ...filteredAtt.take(60).map((a) => ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.check_circle, color: Colors.green),
-                    title: Text(a['full_name'] ?? ''),
-                    subtitle: Text('رقم القيد: ${a['student_id']} • الكود: ${a['session_code']}'),
-                  )),
+              ...filteredAtt.take(60).map((a) {
+                final sid = (a['student_id'] ?? '').toString();
+                final email = _studentEmails[sid];
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.check_circle, color: Colors.green),
+                  title: Text(a['full_name'] ?? ''),
+                  subtitle: Text('قيد: $sid • كود: ${a['session_code']}${email != null ? '\n📧 $email' : ''}'),
+                );
+              }),
           ],
         );
       },
     );
   }
 
-  // 5. تبويب فك ارتباط الأجهزة + إدارة دليل الدفعة
+  // 5. تبويب إدارة المطورين/المناديب للتواصل + نبذة التطبيق + فك الأجهزة + الدليل
   Widget _buildDevicesAndDirectoryTab() {
+    final suppIdCtrl = TextEditingController();
+    final suppNameCtrl = TextEditingController();
+    final suppRoleCtrl = TextEditingController();
+
+    final aboutTextCtrl = TextEditingController();
+    final devNameCtrl = TextEditingController();
+    final devWaCtrl = TextEditingController();
+    final devTgCtrl = TextEditingController();
+
     final searchCtrl = TextEditingController();
     List<dynamic> foundStudents = [];
 
@@ -497,9 +636,90 @@ class _AdminScreenState extends State<AdminScreen> {
       builder: (context, setInnerState) => ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('📱 فك ارتباط هاتف طالب (تصفير device_id)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const Text('💬 إدارة قائمة المطورين والمناديب (للمحادثة الخاصة)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
           const SizedBox(height: 6),
-          const Text('ابحث برقم القيد أو جزء من الاسم لفك قفل الهاتف القديم للطالب.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const Text('أضف رقم قيد المطور أو المندوب ليظهر للطلاب في زر "الدعم والتواصل" للمراسلة داخل التطبيق.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 10),
+          TextField(controller: suppIdCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رقم قيد المطور / المندوب (لربط المحادثة بحسابه)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: suppNameCtrl, decoration: const InputDecoration(labelText: 'الاسم الظاهر للطلاب (مثلاً: د. رامي الحكمي)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: suppRoleCtrl, decoration: const InputDecoration(labelText: 'الصفة (مثلاً: مطور التطبيق / مندوب الدفعة)', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+            icon: const Icon(Icons.person_add_alt_1_rounded),
+            label: const Text('إضافة لقائمة التواصل', style: TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () async {
+              if (suppIdCtrl.text.trim().isEmpty || suppNameCtrl.text.trim().isEmpty) return;
+              setState(() => _isLoading = true);
+              try {
+                await _client.from('support_contacts').insert({
+                  'student_id': suppIdCtrl.text.trim(),
+                  'display_name': suppNameCtrl.text.trim(),
+                  'role_title': suppRoleCtrl.text.trim().isEmpty ? 'فريق الدعم' : suppRoleCtrl.text.trim(),
+                  'is_active': true,
+                  'sort_order': _supportContacts.length + 1,
+                });
+                await _fetchInitialData();
+                _showMsg('تمت الإضافة لقائمة الدعم والتواصل بنجاح');
+              } catch (_) {
+                _showMsg('فشل الإضافة', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+          ),
+          if (_supportContacts.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ..._supportContacts.map((sc) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.support_agent_rounded, color: Color(0xFF4FD1C5)),
+                  title: Text('${sc['display_name']} (${sc['role_title']})'),
+                  subtitle: Text('رقم القيد: ${sc['student_id']}'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                    onPressed: () async {
+                      await _client.from('support_contacts').delete().eq('id', sc['id']);
+                      await _fetchInitialData();
+                      _showMsg('تم الحذف من القائمة');
+                    },
+                  ),
+                )),
+          ],
+          const Divider(height: 36),
+          const Text('ℹ️ تعديل نبذة التطبيق في شاشة تسجيل الدخول', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+          const SizedBox(height: 10),
+          TextField(controller: aboutTextCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'نص النبذة التعريفية للتطبيق', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: devNameCtrl, decoration: const InputDecoration(labelText: 'اسم المطور / الفريق', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: devWaCtrl, decoration: const InputDecoration(labelText: 'رابط واتساب اختياري (https://wa.me/967...)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: devTgCtrl, decoration: const InputDecoration(labelText: 'رابط تيليجرام اختياري (https://t.me/...)', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          ElevatedButton(
+            onPressed: () async {
+              setState(() => _isLoading = true);
+              try {
+                final payload = jsonEncode({
+                  'about': aboutTextCtrl.text.trim(),
+                  'developer': devNameCtrl.text.trim(),
+                  'whatsapp': devWaCtrl.text.trim(),
+                  'telegram': devTgCtrl.text.trim(),
+                });
+                await _client.from('app_settings').upsert({'key': 'about_app_info', 'value': payload});
+                _showMsg('تم تحديث نبذة التطبيق بنجاح ✓');
+              } catch (_) {
+                _showMsg('فشل التحديث', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+            child: const Text('حفظ بيانات النبذة'),
+          ),
+          const Divider(height: 36),
+          const Text('📱 فك ارتباط هاتف طالب (تصفير device_id)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
           const SizedBox(height: 10),
           Row(
             children: [
