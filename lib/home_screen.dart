@@ -1,8 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'app_prefs.dart';
 import 'subject_screen.dart';
 import 'admin_screen.dart';
@@ -20,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   String _studentName = '';
   String _studentId = '';
+  String _universityEmail = '';
   bool _isAdmin = false;
   bool _isSyncing = false;
   String _urgentBanner = '';
@@ -29,6 +39,12 @@ class _HomeScreenState extends State<HomeScreen> {
   List<dynamic> _assignments = [];
   List<dynamic> _notifications = [];
   List<dynamic> _myAttendance = [];
+  List<dynamic> _announcements = [];
+
+  final PageController _bannerPageCtrl = PageController();
+  int _currentBannerPage = 0;
+  bool _bannerDismissed = false;
+  Timer? _bannerTimer;
 
   final List<String> _days = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
   int _selectedDayIndex = 0;
@@ -38,6 +54,28 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _loadLocalData();
     _syncWithCloud(silent: true);
+    _startBannerAutoSlide();
+  }
+
+  @override
+  void dispose() {
+    _bannerTimer?.cancel();
+    _bannerPageCtrl.dispose();
+    super.dispose();
+  }
+
+  void _startBannerAutoSlide() {
+    _bannerTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted || _announcements.length <= 1 || _bannerDismissed) return;
+      if (_bannerPageCtrl.hasClients) {
+        final next = (_currentBannerPage + 1) % _announcements.length;
+        _bannerPageCtrl.animateToPage(
+          next,
+          duration: const Duration(milliseconds: 450),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
   }
 
   Future<void> _loadLocalData() async {
@@ -45,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _studentName = prefs.getString('full_name') ?? 'طالب صيدلة';
       _studentId = prefs.getString('student_id') ?? '';
+      _universityEmail = prefs.getString('university_email') ?? '';
       _isAdmin = prefs.getBool('is_admin') ?? false;
       _urgentBanner = prefs.getString('cache_urgent_banner') ?? '';
 
@@ -53,6 +92,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _assignments = jsonDecode(prefs.getString('cache_assignments') ?? '[]');
       _notifications = jsonDecode(prefs.getString('cache_notifications') ?? '[]');
       _myAttendance = jsonDecode(prefs.getString('cache_my_attendance') ?? '[]');
+      _announcements = jsonDecode(prefs.getString('cache_announcements') ?? '[]');
     });
   }
 
@@ -67,6 +107,15 @@ class _HomeScreenState extends State<HomeScreen> {
       final assignmentsData = await client.from('assignments').select().order('due_date');
       final notificationsData = await client.from('notifications').select().order('created_at', ascending: false);
 
+      List<dynamic> announcementsData = _announcements;
+      try {
+        announcementsData = await client
+            .from('announcements')
+            .select()
+            .eq('is_active', true)
+            .order('created_at', ascending: false);
+      } catch (_) {}
+
       String bannerText = '';
       try {
         final bannerRes = await client
@@ -80,11 +129,19 @@ class _HomeScreenState extends State<HomeScreen> {
       } catch (_) {}
 
       bool cloudAdmin = _isAdmin;
+      String cloudEmail = _universityEmail;
       List<dynamic> attendanceData = _myAttendance;
       if (_studentId.isNotEmpty) {
-        final me = await client.from('students').select('is_admin').eq('student_id', _studentId).maybeSingle();
+        final me = await client
+            .from('students')
+            .select('is_admin, university_email')
+            .eq('student_id', _studentId)
+            .maybeSingle();
         if (me != null) {
           cloudAdmin = me['is_admin'] ?? false;
+          if (me['university_email'] != null) {
+            cloudEmail = me['university_email'].toString();
+          }
         }
         try {
           attendanceData = await client
@@ -97,22 +154,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_admin', cloudAdmin);
+      await prefs.setString('university_email', cloudEmail);
       await prefs.setString('cache_urgent_banner', bannerText);
       await prefs.setString('cache_subjects', jsonEncode(subjectsData));
       await prefs.setString('cache_schedule', jsonEncode(scheduleData));
       await prefs.setString('cache_assignments', jsonEncode(assignmentsData));
       await prefs.setString('cache_notifications', jsonEncode(notificationsData));
       await prefs.setString('cache_my_attendance', jsonEncode(attendanceData));
+      await prefs.setString('cache_announcements', jsonEncode(announcementsData));
 
       if (!mounted) return;
       setState(() {
         _isAdmin = cloudAdmin;
+        _universityEmail = cloudEmail;
         _urgentBanner = bannerText;
         _subjects = subjectsData;
         _schedule = scheduleData;
         _assignments = assignmentsData;
         _notifications = notificationsData;
         _myAttendance = attendanceData;
+        _announcements = announcementsData;
       });
 
       if (!silent && mounted) {
@@ -137,6 +198,52 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Widget _wrapWithWallpaper(Widget child) {
+    if (AppPrefs.wallpaperType == 'none') return child;
+
+    Widget bgLayer;
+    if (AppPrefs.wallpaperType == 'preset') {
+      List<Color> colors;
+      switch (AppPrefs.wallpaperValue) {
+        case 'gradient_blue':
+          colors = [const Color(0xFF0F172A), const Color(0xFF1E3A8A), const Color(0xFF0F172A)];
+          break;
+        case 'gradient_emerald':
+          colors = [const Color(0xFF022C22), const Color(0xFF065F46), const Color(0xFF042F2E)];
+          break;
+        case 'gradient_royal':
+          colors = [const Color(0xFF1E1B4B), const Color(0xFF312E81), const Color(0xFF0F172A)];
+          break;
+        default:
+          colors = [const Color(0xFF042F2E), const Color(0xFF115E59), const Color(0xFF0F172A)];
+      }
+      bgLayer = Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: colors),
+        ),
+      );
+    } else if (AppPrefs.wallpaperType == 'gallery' && AppPrefs.wallpaperValue.isNotEmpty) {
+      bgLayer = kIsWeb
+          ? Image.network(AppPrefs.wallpaperValue, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox.shrink())
+          : Image.file(File(AppPrefs.wallpaperValue), fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox.shrink());
+    } else {
+      return child;
+    }
+
+    final overlayColor = AppPrefs.isDark
+        ? Colors.black.withOpacity(AppPrefs.wallpaperDim)
+        : Colors.white.withOpacity(AppPrefs.wallpaperDim);
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        bgLayer,
+        Container(color: overlayColor),
+        child,
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final cardBg = Theme.of(context).cardColor;
@@ -148,25 +255,29 @@ class _HomeScreenState extends State<HomeScreen> {
       _buildAssignmentsTab(cardBg),
     ];
 
-    return Scaffold(
-      body: SafeArea(child: pages[_currentIndex]),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
-        backgroundColor: cardBg,
-        selectedItemColor: accent,
-        unselectedItemColor: Colors.grey,
-        items: [
-          BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
-          BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
-          BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
-        ],
+    return _wrapWithWallpaper(
+      Scaffold(
+        body: SafeArea(child: pages[_currentIndex]),
+        bottomNavigationBar: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: (index) => setState(() => _currentIndex = index),
+          backgroundColor: cardBg,
+          selectedItemColor: accent,
+          unselectedItemColor: Colors.grey,
+          items: [
+            BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
+            BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
+            BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildDashboardTab(Color cardBg, Color accent) {
     final borderCol = Colors.grey.withOpacity(0.2);
+    final radius = AppPrefs.cardRadius;
+    final orderedSubjects = AppPrefs.applySubjectOrder(_subjects);
 
     return RefreshIndicator(
       onRefresh: () => _syncWithCloud(silent: false),
@@ -178,7 +289,7 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: Colors.redAccent.withOpacity(0.14),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(radius),
                 border: Border.all(color: Colors.redAccent),
               ),
               child: Row(
@@ -203,42 +314,26 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 14),
           ],
-          Row(
+          // الترحيب واسم الطالب (تم حذف الشارة الصفراء بناءً على طلبك)
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(AppPrefs.tr('مرحباً بك،', 'Welcome,'), style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                    Text(
-                      _studentName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
+              Text(AppPrefs.tr('مرحباً بك،', 'Welcome,'), style: const TextStyle(color: Colors.grey, fontSize: 13)),
+              Text(
+                _studentName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
-              if (_isAdmin)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.amber),
-                  ),
-                  child: Text(
-                    AppPrefs.tr('مندوب / مشرف', 'Admin'),
-                    style: const TextStyle(color: Colors.amber, fontSize: 11, fontWeight: FontWeight.bold),
-                  ),
-                ),
             ],
           ),
           const SizedBox(height: 12),
+          // شريط الأزرار العلوي متضمناً زر التواصل المباشر مع المطورين والمناديب
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
+                _topActionBtn(Icons.support_agent_rounded, AppPrefs.tr('الدعم والتواصل', 'Support'), () => _openSupportContactsSheet(), cardBg, accent),
                 _topActionBtn(Icons.qr_code_2_rounded, AppPrefs.tr('كودي (QR)', 'My QR'), () => _showMyStudentQR(), cardBg, accent),
                 _topActionBtn(Icons.calculate_rounded, AppPrefs.tr('حاسبة المعدل', 'GPA Calc'), () {
                   Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
@@ -260,101 +355,143 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
 
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [Color(0xFF1D4ED8), Color(0xFF0D9488)]),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
+          // شريط الإعلانات التفاعلي مكان البطاقة الزرقاء
+          if (AppPrefs.showAnnouncements) ...[
+            _buildAnnouncementsSection(cardBg, accent, radius),
+            const SizedBox(height: 14),
+          ],
+
+          if (AppPrefs.showQuickCards) ...[
+            Row(
               children: [
-                const Icon(Icons.campaign_rounded, size: 36, color: Colors.white),
-                const SizedBox(width: 12),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        AppPrefs.tr('تطبيق IQ_Pharmacy39', 'IQ_Pharmacy39 App'),
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+                  child: InkWell(
+                    onTap: () => setState(() => _currentIndex = 1),
+                    borderRadius: BorderRadius.circular(radius),
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(radius),
+                        border: Border.all(color: borderCol),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _notifications.isNotEmpty
-                            ? _notifications.first['title']
-                            : AppPrefs.tr('دفعة 39 صيدلة - بوابتك الدراسية المتكاملة', 'Batch 39 Pharmacy - Your Study Portal'),
-                        style: const TextStyle(fontSize: 13, color: Colors.white70),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.event_note_rounded, color: accent, size: 24),
+                          const SizedBox(height: 8),
+                          Text(AppPrefs.tr('الجدول (${_schedule.length})', 'Schedule (${_schedule.length})'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                          Text(AppPrefs.tr('المحاضرات والقاعات', 'Lectures & Halls'), style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                        ],
                       ),
-                    ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: InkWell(
+                    onTap: () => _showMyAttendanceDetails(),
+                    borderRadius: BorderRadius.circular(radius),
+                    child: Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(radius),
+                        border: Border.all(color: borderCol),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.fact_check_rounded, color: Colors.green, size: 24),
+                          const SizedBox(height: 8),
+                          Text(AppPrefs.tr('سجل حضوري (${_myAttendance.length})', 'Attendance (${_myAttendance.length})'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                          Text(AppPrefs.tr('اضغط لعرض التفاصيل', 'Tap for details'), style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 14),
+            const SizedBox(height: 20),
+          ],
 
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Expanded(
-                child: InkWell(
-                  onTap: () => setState(() => _currentIndex = 1),
-                  borderRadius: BorderRadius.circular(14),
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: cardBg,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: borderCol),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Icon(Icons.event_note_rounded, color: accent, size: 24),
-                        const SizedBox(height: 8),
-                        Text(AppPrefs.tr('الجدول (${_schedule.length})', 'Schedule (${_schedule.length})'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        Text(AppPrefs.tr('المحاضرات والقاعات', 'Lectures & Halls'), style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: InkWell(
-                  onTap: () => _showMyAttendanceDetails(),
-                  borderRadius: BorderRadius.circular(14),
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: cardBg,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: borderCol),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.fact_check_rounded, color: Colors.green, size: 24),
-                        const SizedBox(height: 8),
-                        Text(AppPrefs.tr('سجل حضوري (${_myAttendance.length})', 'Attendance (${_myAttendance.length})'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        Text(AppPrefs.tr('اضغط لعرض التفاصيل', 'Tap for details'), style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                ),
+              Text(AppPrefs.tr('المواد الدراسية', 'Subjects'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              IconButton(
+                tooltip: AppPrefs.subjectsGrid ? AppPrefs.tr('عرض كلائحة', 'List View') : AppPrefs.tr('عرض كشبكة', 'Grid View'),
+                icon: Icon(AppPrefs.subjectsGrid ? Icons.view_list_rounded : Icons.grid_view_rounded, color: accent),
+                onPressed: () => AppPrefs.setSubjectsGrid(!AppPrefs.subjectsGrid),
               ),
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 8),
 
-          Text(AppPrefs.tr('المواد الدراسية', 'Subjects'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-
-          if (_subjects.isEmpty)
+          if (orderedSubjects.isEmpty)
             Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(AppPrefs.tr('اسحب للأسفل لمزامنة المواد لأول مرة', 'Pull down to sync subjects'))))
+          else if (AppPrefs.subjectsGrid)
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+                childAspectRatio: 1.15,
+              ),
+              itemCount: orderedSubjects.length,
+              itemBuilder: (_, idx) {
+                final subj = orderedSubjects[idx];
+                Color subjColor = const Color(0xFF2B6CB0);
+                try {
+                  final hex = (subj['color_hex'] ?? '#2B6CB0').toString().replaceAll('#', '');
+                  subjColor = Color(int.parse('FF$hex', radix: 16));
+                } catch (_) {}
+
+                return InkWell(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => SubjectScreen(subject: subj, defaultColor: subjColor)),
+                    );
+                  },
+                  borderRadius: BorderRadius.circular(radius),
+                  child: Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: cardBg,
+                      borderRadius: BorderRadius.circular(radius),
+                      border: Border.all(color: borderCol),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          width: 48,
+                          height: 48,
+                          decoration: BoxDecoration(color: subjColor.withOpacity(0.18), borderRadius: BorderRadius.circular(12)),
+                          child: Icon(Icons.menu_book_rounded, color: subjColor, size: 26),
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          subj['name'] ?? '',
+                          maxLines: 2,
+                          textAlign: TextAlign.center,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            )
           else
-            ..._subjects.map((subj) {
+            ...orderedSubjects.map((subj) {
               Color subjColor = const Color(0xFF2B6CB0);
               try {
                 final hex = (subj['color_hex'] ?? '#2B6CB0').toString().replaceAll('#', '');
@@ -364,7 +501,7 @@ class _HomeScreenState extends State<HomeScreen> {
               return Card(
                 color: cardBg,
                 margin: const EdgeInsets.only(bottom: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius)),
                 child: ListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   leading: Container(
@@ -388,6 +525,361 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             }),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAnnouncementsSection(Color cardBg, Color accent, double radius) {
+    if (_announcements.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(colors: [Color(0xFF1D4ED8), Color(0xFF0D9488)]),
+          borderRadius: BorderRadius.circular(radius),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.campaign_rounded, size: 36, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    AppPrefs.tr('تطبيق IQ_Pharmacy39', 'IQ_Pharmacy39 App'),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _notifications.isNotEmpty
+                        ? _notifications.first['title']
+                        : AppPrefs.tr('دفعة 39 صيدلة - بوابتك الدراسية المتكاملة', 'Batch 39 Pharmacy - Your Study Portal'),
+                    style: const TextStyle(fontSize: 13, color: Colors.white70),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_bannerDismissed) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: ActionChip(
+          avatar: Icon(Icons.campaign_rounded, size: 16, color: accent),
+          label: Text(AppPrefs.tr('إظهار الإعلانات (${_announcements.length})', 'Show Announcements (${_announcements.length})'), style: const TextStyle(fontSize: 12)),
+          onPressed: () => setState(() => _bannerDismissed = false),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 155,
+      child: Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(radius),
+            child: PageView.builder(
+              controller: _bannerPageCtrl,
+              itemCount: _announcements.length,
+              onPageChanged: (idx) => setState(() => _currentBannerPage = idx),
+              itemBuilder: (_, idx) {
+                final item = _announcements[idx];
+                final imgUrl = (item['image_url'] ?? '').toString();
+                final title = (item['title'] ?? '').toString();
+
+                return GestureDetector(
+                  onTap: () => _showAnnouncementFullModal(item),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (imgUrl.isNotEmpty && !AppPrefs.dataSaver)
+                        Image.network(
+                          imgUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => Container(
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(colors: [Color(0xFF1E3A8A), Color(0xFF0D9488)]),
+                            ),
+                            child: const Center(child: Icon(Icons.campaign_rounded, size: 48, color: Colors.white70)),
+                          ),
+                        )
+                      else
+                        Container(
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(colors: [Color(0xFF1E3A8A), Color(0xFF0D9488)]),
+                          ),
+                          child: const Center(child: Icon(Icons.campaign_rounded, size: 48, color: Colors.white70)),
+                        ),
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [Colors.transparent, Colors.black.withOpacity(0.82)],
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        bottom: 22,
+                        right: 14,
+                        left: 14,
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          // زر إغلاق X في الزاوية
+          Positioned(
+            top: 8,
+            left: 8,
+            child: GestureDetector(
+              onTap: () => setState(() => _bannerDismissed = true),
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(color: Colors.black.withOpacity(0.55), shape: BoxShape.circle),
+                child: const Icon(Icons.close_rounded, color: Colors.white, size: 16),
+              ),
+            ),
+          ),
+          // مؤشر النقاط في الأسفل
+          if (_announcements.length > 1)
+            Positioned(
+              bottom: 7,
+              left: 0,
+              right: 0,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(_announcements.length, (i) {
+                  final active = i == _currentBannerPage;
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 250),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: active ? 16 : 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: active ? accent : Colors.white54,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  );
+                }),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showAnnouncementFullModal(Map<String, dynamic> item) {
+    final imgUrl = (item['image_url'] ?? '').toString();
+    final title = (item['title'] ?? '').toString();
+    final desc = (item['description'] ?? '').toString();
+    final actionUrl = (item['action_url'] ?? '').toString().trim();
+    final accent = Theme.of(context).colorScheme.primary;
+
+    showDialog(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.9),
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(
+              alignment: Alignment.topLeft,
+              child: IconButton(
+                style: IconButton.styleFrom(backgroundColor: Colors.white24),
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ),
+            const SizedBox(height: 8),
+            if (imgUrl.isNotEmpty)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
+                  child: Image.network(imgUrl, fit: BoxFit.contain),
+                ),
+              ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            if (desc.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                desc,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.5),
+              ),
+            ],
+            if (actionUrl.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: accent,
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  icon: const Icon(Icons.open_in_new_rounded),
+                  label: Text(AppPrefs.tr('فتح الرابط', 'Open Link'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  onPressed: () => launchUrl(Uri.parse(actionUrl), mode: LaunchMode.externalApplication),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // نافذة التواصل المباشر مع المطورين والمناديب داخل التطبيق
+  void _openSupportContactsSheet() {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: cardBg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.65,
+        maxChildSize: 0.9,
+        minChildSize: 0.4,
+        expand: false,
+        builder: (_, scrollCtrl) => FutureBuilder<List<dynamic>>(
+          future: Supabase.instance.client
+              .from('support_contacts')
+              .select()
+              .eq('is_active', true)
+              .order('sort_order'),
+          builder: (context, snapshot) {
+            final contacts = snapshot.data ?? [];
+            final amISupport = _isAdmin || contacts.any((c) => c['student_id'].toString() == _studentId);
+
+            return ListView(
+              controller: scrollCtrl,
+              padding: const EdgeInsets.all(20),
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.support_agent_rounded, color: accent, size: 26),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        AppPrefs.tr('التواصل المباشر مع المطورين والمناديب', 'Direct Support & Developers'),
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  AppPrefs.tr(
+                    'اختر الشخص المناسب لبدء محادثة خاصة مباشرة داخل التطبيق لطرح استفسارك أو اقتراحك:',
+                    'Select a contact to start a private in-app chat:',
+                  ),
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                if (amISupport) ...[
+                  const SizedBox(height: 14),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: accent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    icon: const Icon(Icons.inbox_rounded),
+                    label: Text(AppPrefs.tr('صندوق رسائل الطلاب الواردة (للمطورين والمناديب)', 'Incoming Student Messages'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SupportInboxScreen(myId: _studentId, myName: _studentName),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+                const SizedBox(height: 16),
+                if (snapshot.connectionState == ConnectionState.waiting)
+                  const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
+                else if (contacts.isEmpty)
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        AppPrefs.tr('لم يتم إضافة جهات تواصل بعد من لوحة الإدارة.', 'No support contacts added yet.'),
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    ),
+                  )
+                else
+                  ...contacts.map((c) {
+                    final targetId = (c['student_id'] ?? '').toString();
+                    final name = (c['display_name'] ?? '').toString();
+                    final role = (c['role_title'] ?? '').toString();
+
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      child: ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: accent.withOpacity(0.2),
+                          child: Icon(Icons.person_rounded, color: accent),
+                        ),
+                        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text(role, style: TextStyle(color: accent, fontSize: 12)),
+                        trailing: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: accent.withOpacity(0.18),
+                            foregroundColor: accent,
+                            elevation: 0,
+                          ),
+                          icon: const Icon(Icons.chat_rounded, size: 16),
+                          label: Text(AppPrefs.tr('مراسلة', 'Chat'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => DirectSupportChatScreen(
+                                  myId: _studentId,
+                                  myName: _studentName,
+                                  peerId: targetId,
+                                  peerName: name,
+                                  peerRole: role,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    );
+                  }),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -594,7 +1086,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     return Card(
                       color: cardBg,
                       margin: const EdgeInsets.only(bottom: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppPrefs.cardRadius)),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
@@ -641,6 +1133,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     return Card(
                       color: cardBg,
                       margin: const EdgeInsets.only(bottom: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppPrefs.cardRadius)),
                       child: ListTile(
                         title: Text('${task['subject_name']}: ${task['title']}', style: const TextStyle(fontWeight: FontWeight.bold)),
                         subtitle: Text('${task['details']}\n${AppPrefs.tr('موعد التسليم:', 'Due:')} ${task['due_date'].toString().split('T').first}'),
@@ -728,80 +1221,597 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // شاشة الإعدادات الشاملة
   void _openGeneralSettings() {
+    final emailCtrl = TextEditingController(text: _universityEmail);
+    bool savingEmail = false;
+
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => StatefulBuilder(
           builder: (ctx, setSettingsState) {
             final accent = Theme.of(ctx).colorScheme.primary;
+            final cardBg = Theme.of(ctx).cardColor;
+            final orderedList = AppPrefs.applySubjectOrder(_subjects);
+
             return Scaffold(
-              appBar: AppBar(title: Text(AppPrefs.tr('الإعدادات العامة', 'General Settings'))),
+              appBar: AppBar(title: Text(AppPrefs.tr('الإعدادات والتخصيص', 'Settings & Customization'))),
               body: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  ListTile(
-                    leading: Icon(Icons.person, color: accent),
-                    title: Text(_studentName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text(AppPrefs.tr('رقم القيد المقفل بهذا الهاتف: $_studentId', 'Locked Student ID: $_studentId')),
-                  ),
-                  const Divider(),
-                  SwitchListTile(
-                    secondary: Icon(AppPrefs.isDark ? Icons.dark_mode : Icons.light_mode, color: accent),
-                    title: Text(AppPrefs.tr('الوضع الليلي (الغامق)', 'Dark Mode')),
-                    subtitle: Text(AppPrefs.tr('تبديل مظهر التطبيق بين الغامق والفاتح', 'Switch app theme between Dark and Light')),
-                    value: AppPrefs.isDark,
-                    onChanged: (val) async {
-                      await AppPrefs.setDark(val);
-                      setSettingsState(() {});
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.language, color: Colors.purpleAccent),
-                    title: Text(AppPrefs.tr('لغة الواجهة', 'App Language')),
-                    subtitle: Text(AppPrefs.isEnglish ? 'English' : 'العربية'),
-                    trailing: SegmentedButton<String>(
-                      segments: const [
-                        ButtonSegment(value: 'ar', label: Text('عربي')),
-                        ButtonSegment(value: 'en', label: Text('EN')),
-                      ],
-                      selected: {AppPrefs.isEnglish ? 'en' : 'ar'},
-                      onSelectionChanged: (selection) async {
-                        await AppPrefs.setLang(selection.first);
-                        setSettingsState(() {});
-                      },
+                  // 1. بطاقة الحساب وربط البريد الجامعي
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(Icons.verified_user_rounded, color: accent),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(_studentName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                                    Text('${AppPrefs.tr('رقم القيد:', 'Student ID:')} $_studentId', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                                  ],
+                                ),
+                              ),
+                              if (_universityEmail.isNotEmpty)
+                                Chip(
+                                  backgroundColor: Colors.green.withOpacity(0.18),
+                                  label: Text(AppPrefs.tr('مرتبط ✓', 'Linked ✓'), style: const TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)),
+                                ),
+                            ],
+                          ),
+                          const Divider(height: 24),
+                          Text(
+                            AppPrefs.tr('ربط البريد الجامعي (لنظام الكلية والتحضير)', 'Link University Email'),
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: accent),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: emailCtrl,
+                                  keyboardType: TextInputType.emailAddress,
+                                  decoration: InputDecoration(
+                                    hintText: 'example@su.edu.ye',
+                                    isDense: true,
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                                onPressed: savingEmail
+                                    ? null
+                                    : () async {
+                                        final em = emailCtrl.text.trim();
+                                        if (em.isEmpty || !em.contains('@')) {
+                                          ScaffoldMessenger.of(ctx).showSnackBar(
+                                            SnackBar(content: Text(AppPrefs.tr('يرجى إدخال بريد إلكتروني صحيح', 'Enter a valid email')), backgroundColor: Colors.red),
+                                          );
+                                          return;
+                                        }
+                                        setSettingsState(() => savingEmail = true);
+                                        try {
+                                          await Supabase.instance.client
+                                              .from('students')
+                                              .update({'university_email': em})
+                                              .eq('student_id', _studentId);
+                                          final prefs = await SharedPreferences.getInstance();
+                                          await prefs.setString('university_email', em);
+                                          setState(() => _universityEmail = em);
+                                          setSettingsState(() => savingEmail = false);
+                                          if (!ctx.mounted) return;
+                                          ScaffoldMessenger.of(ctx).showSnackBar(
+                                            SnackBar(content: Text(AppPrefs.tr('تم ربط البريد الجامعي بنجاح ✓', 'University email linked ✓')), backgroundColor: Colors.teal),
+                                          );
+                                        } catch (_) {
+                                          setSettingsState(() => savingEmail = false);
+                                          if (!ctx.mounted) return;
+                                          ScaffoldMessenger.of(ctx).showSnackBar(
+                                            SnackBar(content: Text(AppPrefs.tr('تعذر الحفظ (قد يكون البريد مستخدماً لطالب آخر)', 'Failed to save email')), backgroundColor: Colors.red),
+                                          );
+                                        }
+                                      },
+                                child: savingEmail
+                                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                                    : Text(AppPrefs.tr('ربط', 'Link'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                  const Divider(),
-                  ListTile(
-                    leading: const Icon(Icons.calculate, color: Colors.amber),
-                    title: Text(AppPrefs.tr('حاسبة المعدل الفصلي والتراكمي', 'GPA Calculator')),
-                    onTap: () {
-                      Navigator.pop(context);
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
-                    },
+                  const SizedBox(height: 10),
+
+                  // 2. الخلفيات والسمات
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ExpansionTile(
+                      leading: Icon(Icons.wallpaper_rounded, color: accent),
+                      title: Text(AppPrefs.tr('الخلفيات والسمات', 'Wallpapers & Themes'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(AppPrefs.tr('الألوان، خلفيات التطبيق، أو صورة من المعرض', 'Theme colors, presets, or gallery'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(AppPrefs.tr('سمة الألوان:', 'Color Theme:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _themeChip(ctx, setSettingsState, 'dark', AppPrefs.tr('داكن', 'Dark'), const Color(0xFF181B20)),
+                            _themeChip(ctx, setSettingsState, 'amoled', 'AMOLED', Colors.black),
+                            _themeChip(ctx, setSettingsState, 'pharmacy', AppPrefs.tr('صيدلاني', 'Pharmacy'), const Color(0xFF0F2927)),
+                            _themeChip(ctx, setSettingsState, 'light', AppPrefs.tr('فاتح', 'Light'), Colors.white),
+                          ],
+                        ),
+                        const Divider(height: 24),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(AppPrefs.tr('خلفية الواجهة:', 'App Wallpaper:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            ChoiceChip(
+                              label: Text(AppPrefs.tr('بدون خلفية', 'None')),
+                              selected: AppPrefs.wallpaperType == 'none',
+                              onSelected: (_) async {
+                                await AppPrefs.setWallpaper('none', '');
+                                setSettingsState(() {});
+                              },
+                            ),
+                            ChoiceChip(
+                              label: Text(AppPrefs.tr('تدرج تركوازي', 'Teal')),
+                              selected: AppPrefs.wallpaperValue == 'gradient_teal',
+                              onSelected: (_) async {
+                                await AppPrefs.setWallpaper('preset', 'gradient_teal');
+                                setSettingsState(() {});
+                              },
+                            ),
+                            ChoiceChip(
+                              label: Text(AppPrefs.tr('تدرج أزرق', 'Blue')),
+                              selected: AppPrefs.wallpaperValue == 'gradient_blue',
+                              onSelected: (_) async {
+                                await AppPrefs.setWallpaper('preset', 'gradient_blue');
+                                setSettingsState(() {});
+                              },
+                            ),
+                            ChoiceChip(
+                              label: Text(AppPrefs.tr('تدرج زمردي', 'Emerald')),
+                              selected: AppPrefs.wallpaperValue == 'gradient_emerald',
+                              onSelected: (_) async {
+                                await AppPrefs.setWallpaper('preset', 'gradient_emerald');
+                                setSettingsState(() {});
+                              },
+                            ),
+                            ActionChip(
+                              avatar: Icon(Icons.photo_library_rounded, size: 16, color: accent),
+                              label: Text(AppPrefs.tr('من المعرض', 'From Gallery')),
+                              onPressed: () async {
+                                final picker = ImagePicker();
+                                final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+                                if (picked != null) {
+                                  await AppPrefs.setWallpaper('gallery', picked.path);
+                                  setSettingsState(() {});
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                        if (AppPrefs.wallpaperType != 'none') ...[
+                          const SizedBox(height: 12),
+                          Text('${AppPrefs.tr('درجة تعتيم الخلفية:', 'Wallpaper Dimming:')} ${(AppPrefs.wallpaperDim * 100).round()}%', style: const TextStyle(fontSize: 12)),
+                          Slider(
+                            value: AppPrefs.wallpaperDim,
+                            min: 0.2,
+                            max: 0.95,
+                            onChanged: (v) async {
+                              await AppPrefs.setWallpaperDim(v);
+                              setSettingsState(() {});
+                            },
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.contact_phone, color: Colors.lightBlue),
-                    title: Text(AppPrefs.tr('دليل المناديب والروابط المهمة', 'Batch Directory & Links')),
-                    onTap: () {
-                      Navigator.pop(context);
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
-                    },
+                  const SizedBox(height: 10),
+
+                  // 3. الخط والحجم
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ExpansionTile(
+                      leading: Icon(Icons.font_download_rounded, color: accent),
+                      title: Text(AppPrefs.tr('الخط والحجم', 'Font & Size'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(AppPrefs.tr('تلقائي، النسخ، الرقعة، القاهرة، تجوال، المراعي', 'Font family & text scale'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: accent.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            AppPrefs.tr('معاينة النص: دفعة 39 صيدلة إكلينيكية - جامعة صنعاء', 'Text Preview: Batch 39 Clinical Pharmacy'),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _fontChip(setSettingsState, 'system', AppPrefs.tr('تلقائي', 'System')),
+                            _fontChip(setSettingsState, 'cairo', AppPrefs.tr('القاهرة', 'Cairo')),
+                            _fontChip(setSettingsState, 'tajawal', AppPrefs.tr('تجوال', 'Tajawal')),
+                            _fontChip(setSettingsState, 'amiri', AppPrefs.tr('النسخ (أميري)', 'Naskh (Amiri)')),
+                            _fontChip(setSettingsState, 'ruqaa', AppPrefs.tr('الرقعة', 'Ruqaa')),
+                            _fontChip(setSettingsState, 'almarai', AppPrefs.tr('المراعي', 'Almarai')),
+                          ],
+                        ),
+                        const Divider(height: 24),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(AppPrefs.tr('حجم الخط:', 'Font Size:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        ),
+                        const SizedBox(height: 8),
+                        SegmentedButton<double>(
+                          segments: [
+                            ButtonSegment(value: 0.85, label: Text(AppPrefs.tr('صغير', 'S'))),
+                            ButtonSegment(value: 1.0, label: Text(AppPrefs.tr('متوسط', 'M'))),
+                            ButtonSegment(value: 1.15, label: Text(AppPrefs.tr('كبير', 'L'))),
+                            ButtonSegment(value: 1.30, label: Text(AppPrefs.tr('ضخم', 'XL'))),
+                          ],
+                          selected: {AppPrefs.fontScale},
+                          onSelectionChanged: (sel) async {
+                            await AppPrefs.setFontScale(sel.first);
+                            setSettingsState(() {});
+                          },
+                        ),
+                      ],
+                    ),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.sync, color: Colors.teal),
-                    title: Text(AppPrefs.tr('مزامنة وتحديث البيانات الآن', 'Sync Data Now')),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _syncWithCloud(silent: false);
-                    },
+                  const SizedBox(height: 10),
+
+                  // 4. عرض وترتيب المواد (بالأسهم فقط دون أي زر إخفاء)
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ExpansionTile(
+                      leading: Icon(Icons.reorder_rounded, color: accent),
+                      title: Text(AppPrefs.tr('المواد وطريقة العرض', 'Subjects Layout & Order'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(AppPrefs.tr('لائحة أو شبكة + ترتيب المواد بالأسهم', 'Grid/List & Reorder subjects'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(AppPrefs.tr('طريقة العرض في الرئيسية:', 'Home Layout:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            SegmentedButton<bool>(
+                              segments: [
+                                ButtonSegment(value: false, icon: const Icon(Icons.view_list_rounded, size: 16), label: Text(AppPrefs.tr('لائحة', 'List'))),
+                                ButtonSegment(value: true, icon: const Icon(Icons.grid_view_rounded, size: 16), label: Text(AppPrefs.tr('شبكة', 'Grid'))),
+                              ],
+                              selected: {AppPrefs.subjectsGrid},
+                              onSelectionChanged: (sel) async {
+                                await AppPrefs.setSubjectsGrid(sel.first);
+                                setSettingsState(() {});
+                              },
+                            ),
+                          ],
+                        ),
+                        const Divider(height: 24),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(AppPrefs.tr('ترتيب المواد:', 'Reorder Subjects:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            TextButton(
+                              onPressed: () async {
+                                await AppPrefs.setSubjectOrder([]);
+                                setSettingsState(() {});
+                              },
+                              child: Text(AppPrefs.tr('استعادة الافتراضي', 'Reset Order'), style: TextStyle(color: accent, fontSize: 12)),
+                            ),
+                          ],
+                        ),
+                        ...List.generate(orderedList.length, (index) {
+                          final subj = orderedList[index];
+                          final isFirst = index == 0;
+                          final isLast = index == orderedList.length - 1;
+                          Color subjColor = accent;
+                          try {
+                            final hex = (subj['color_hex'] ?? '#2B6CB0').toString().replaceAll('#', '');
+                            subjColor = Color(int.parse('FF$hex', radix: 16));
+                          } catch (_) {}
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.menu_book_rounded, color: subjColor, size: 22),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    subj['name'] ?? '',
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                  ),
+                                ),
+                                // زر السهم للأعلى فقط
+                                IconButton(
+                                  icon: Icon(Icons.arrow_drop_up_rounded, size: 30, color: isFirst ? Colors.grey.withOpacity(0.3) : Colors.white),
+                                  onPressed: isFirst
+                                      ? null
+                                      : () async {
+                                          final ids = orderedList.map((e) => (e['id'] ?? '').toString()).toList();
+                                          final temp = ids[index - 1];
+                                          ids[index - 1] = ids[index];
+                                          ids[index] = temp;
+                                          await AppPrefs.setSubjectOrder(ids);
+                                          setSettingsState(() {});
+                                        },
+                                ),
+                                // زر السهم للأسفل فقط
+                                IconButton(
+                                  icon: Icon(Icons.arrow_drop_down_rounded, size: 30, color: isLast ? Colors.grey.withOpacity(0.3) : Colors.white),
+                                  onPressed: isLast
+                                      ? null
+                                      : () async {
+                                          final ids = orderedList.map((e) => (e['id'] ?? '').toString()).toList();
+                                          final temp = ids[index + 1];
+                                          ids[index + 1] = ids[index];
+                                          ids[index] = temp;
+                                          await AppPrefs.setSubjectOrder(ids);
+                                          setSettingsState(() {});
+                                        },
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
                   ),
-                  ListTile(
-                    leading: const Icon(Icons.admin_panel_settings, color: Colors.orange),
-                    title: Text(AppPrefs.tr('لوحة إدارة الدفعة (للمشرفين فقط)', 'Admin Dashboard (Admins Only)')),
-                    subtitle: Text(AppPrefs.tr('إرسال إشعارات، رفع ملفات، كشوفات الحضور، فك الأجهزة', 'Notifications, files, attendance, unlock devices')),
-                    onTap: () => _promptAdminPassword(),
+                  const SizedBox(height: 10),
+
+                  // 5. الشكل والواجهة والقفل واللغة
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ExpansionTile(
+                      leading: Icon(Icons.tune_rounded, color: accent),
+                      title: Text(AppPrefs.tr('الواجهة والأمان واللغة', 'UI, Security & Language'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(AppPrefs.tr('استدارة الحواف، قفل التطبيق، اللغة، توفير البيانات', 'Corners, PIN lock, language'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.language, color: Colors.purpleAccent),
+                          title: Text(AppPrefs.tr('لغة الواجهة', 'App Language')),
+                          trailing: SegmentedButton<String>(
+                            segments: const [
+                              ButtonSegment(value: 'ar', label: Text('عربي')),
+                              ButtonSegment(value: 'en', label: Text('EN')),
+                            ],
+                            selected: {AppPrefs.isEnglish ? 'en' : 'ar'},
+                            onSelectionChanged: (selection) async {
+                              await AppPrefs.setLang(selection.first);
+                              setSettingsState(() {});
+                            },
+                          ),
+                        ),
+                        const Divider(),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(AppPrefs.tr('استدارة زوايا البطاقات:', 'Card Corner Radius:'), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        ),
+                        const SizedBox(height: 8),
+                        SegmentedButton<double>(
+                          segments: [
+                            ButtonSegment(value: 6.0, label: Text(AppPrefs.tr('حادة', 'Sharp'))),
+                            ButtonSegment(value: 14.0, label: Text(AppPrefs.tr('متوسطة', 'Medium'))),
+                            ButtonSegment(value: 22.0, label: Text(AppPrefs.tr('دائرية', 'Round'))),
+                          ],
+                          selected: {AppPrefs.cardRadius},
+                          onSelectionChanged: (sel) async {
+                            await AppPrefs.setCardRadius(sel.first);
+                            setSettingsState(() {});
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(AppPrefs.tr('إظهار شريط الإعلانات في الرئيسية', 'Show Announcements Banner')),
+                          value: AppPrefs.showAnnouncements,
+                          onChanged: (v) async {
+                            await AppPrefs.setTogglePref('show_announcements', v);
+                            setSettingsState(() {});
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(AppPrefs.tr('إظهار بطاقتي الجدول والحضور السريعة', 'Show Schedule & Attendance Cards')),
+                          value: AppPrefs.showQuickCards,
+                          onChanged: (v) async {
+                            await AppPrefs.setTogglePref('show_quick_cards', v);
+                            setSettingsState(() {});
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(AppPrefs.tr('وضع توفير البيانات (عدم تحميل صور الإعلانات)', 'Data Saver Mode')),
+                          value: AppPrefs.dataSaver,
+                          onChanged: (v) async {
+                            await AppPrefs.setTogglePref('data_saver', v);
+                            setSettingsState(() {});
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          secondary: Icon(Icons.lock_outline_rounded, color: accent),
+                          title: Text(AppPrefs.tr('قفل التطبيق برمز مرور (PIN)', 'Lock App with PIN')),
+                          subtitle: Text(AppPrefs.pinEnabled ? AppPrefs.tr('مفعّل', 'Enabled') : AppPrefs.tr('غير مفعّل', 'Disabled')),
+                          value: AppPrefs.pinEnabled,
+                          onChanged: (val) async {
+                            if (val) {
+                              final pinCtrl = TextEditingController();
+                              showDialog(
+                                context: ctx,
+                                builder: (dCtx) => AlertDialog(
+                                  title: Text(AppPrefs.tr('تعيين رمز مرور (PIN)', 'Set App PIN')),
+                                  content: TextField(
+                                    controller: pinCtrl,
+                                    keyboardType: TextInputType.number,
+                                    maxLength: 6,
+                                    obscureText: true,
+                                    textAlign: TextAlign.center,
+                                    decoration: InputDecoration(hintText: AppPrefs.tr('أدخل 4-6 أرقام', 'Enter 4-6 digits')),
+                                  ),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.pop(dCtx), child: Text(AppPrefs.tr('إلغاء', 'Cancel'))),
+                                    ElevatedButton(
+                                      onPressed: () async {
+                                        if (pinCtrl.text.trim().length >= 4) {
+                                          await AppPrefs.setAppPin(true, pinCtrl.text.trim());
+                                          if (dCtx.mounted) Navigator.pop(dCtx);
+                                          setSettingsState(() {});
+                                        }
+                                      },
+                                      child: Text(AppPrefs.tr('حفظ', 'Save')),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            } else {
+                              await AppPrefs.setAppPin(false, '');
+                              setSettingsState(() {});
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // 6. النسخ الاحتياطي وإعادة الضبط
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ExpansionTile(
+                      leading: Icon(Icons.backup_rounded, color: accent),
+                      title: Text(AppPrefs.tr('النسخ الاحتياطي وإعادة الضبط', 'Backup & Reset'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(AppPrefs.tr('تصدير أو استيراد الإعدادات وترتيب المواد', 'Export/Import settings'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.upload_file_rounded, color: Colors.teal),
+                          title: Text(AppPrefs.tr('تصدير ومشاركة نسخة احتياطية', 'Export & Share Backup')),
+                          onTap: () async {
+                            final jsonStr = AppPrefs.exportBackupJson();
+                            if (kIsWeb) {
+                              await Clipboard.setData(ClipboardData(text: jsonStr));
+                              if (!ctx.mounted) return;
+                              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(AppPrefs.tr('تم نسخ ملف النسخة الاحتياطية للحافظة', 'Backup copied to clipboard'))));
+                            } else {
+                              final dir = await getTemporaryDirectory();
+                              final file = File('${dir.path}/IQ_Pharmacy39_Backup.json');
+                              await file.writeAsString(jsonStr);
+                              await Share.shareXFiles([XFile(file.path)], text: 'نسخة احتياطية لإعدادات تطبيق IQ_Pharmacy39');
+                            }
+                          },
+                        ),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.download_for_offline_rounded, color: Colors.blueAccent),
+                          title: Text(AppPrefs.tr('استيراد نسخة احتياطية (.json)', 'Import Backup (.json)')),
+                          onTap: () async {
+                            final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json'], withData: true);
+                            if (result != null && result.files.isNotEmpty) {
+                              final bytes = result.files.first.bytes;
+                              String content = '';
+                              if (bytes != null) {
+                                content = utf8.decode(bytes);
+                              } else if (result.files.first.path != null && !kIsWeb) {
+                                content = await File(result.files.first.path!).readAsString();
+                              }
+                              final ok = await AppPrefs.importBackupJson(content);
+                              setSettingsState(() {});
+                              if (!ctx.mounted) return;
+                              ScaffoldMessenger.of(ctx).showSnackBar(
+                                SnackBar(
+                                  content: Text(ok ? AppPrefs.tr('تمت استعادة الإعدادات بنجاح ✓', 'Backup restored ✓') : AppPrefs.tr('ملف النسخة الاحتياطية غير صالح', 'Invalid backup file')),
+                                  backgroundColor: ok ? Colors.teal : Colors.red,
+                                ),
+                              );
+                            }
+                          },
+                        ),
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.restore_rounded, color: Colors.redAccent),
+                          title: Text(AppPrefs.tr('إعادة ضبط جميع الإعدادات للافتراضي', 'Reset All Settings'), style: const TextStyle(color: Colors.redAccent)),
+                          onTap: () async {
+                            await AppPrefs.resetAllSettings();
+                            setSettingsState(() {});
+                            if (!ctx.mounted) return;
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              SnackBar(content: Text(AppPrefs.tr('تمت إعادة الضبط للوضع الافتراضي', 'Settings reset to defaults'))),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // 7. اختصارات ولوحة الإدارة السرية
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.sync, color: Colors.teal),
+                          title: Text(AppPrefs.tr('مزامنة وتحديث البيانات الآن', 'Sync Data Now')),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _syncWithCloud(silent: false);
+                          },
+                        ),
+                        const Divider(height: 1),
+                        ListTile(
+                          leading: const Icon(Icons.admin_panel_settings, color: Colors.orange),
+                          title: Text(AppPrefs.tr('لوحة إدارة الدفعة (للمشرفين فقط)', 'Admin Dashboard (Admins Only)')),
+                          subtitle: Text(AppPrefs.tr('إدارة الإعلانات، التواصل، الإشعارات، الملفات، كشوفات الحضور', 'Announcements, support, alerts, files, attendance')),
+                          onTap: () => _promptAdminPassword(),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -809,6 +1819,30 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         ),
       ),
+    );
+  }
+
+  Widget _themeChip(BuildContext ctx, StateSetter setSettingsState, String preset, String label, Color color) {
+    final selected = AppPrefs.themePreset == preset;
+    return ChoiceChip(
+      avatar: CircleAvatar(backgroundColor: color, radius: 8),
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) async {
+        await AppPrefs.setThemePreset(preset);
+        setSettingsState(() {});
+      },
+    );
+  }
+
+  Widget _fontChip(StateSetter setSettingsState, String family, String label) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: AppPrefs.fontFamily == family,
+      onSelected: (_) async {
+        await AppPrefs.setFontFamily(family);
+        setSettingsState(() {});
+      },
     );
   }
 
@@ -1087,6 +2121,229 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// شاشة المحادثة الخاصة المباشرة مع المطور أو المندوب داخل التطبيق
+class DirectSupportChatScreen extends StatefulWidget {
+  final String myId;
+  final String myName;
+  final String peerId;
+  final String peerName;
+  final String peerRole;
+
+  const DirectSupportChatScreen({
+    super.key,
+    required this.myId,
+    required this.myName,
+    required this.peerId,
+    required this.peerName,
+    required this.peerRole,
+  });
+
+  @override
+  State<DirectSupportChatScreen> createState() => _DirectSupportChatScreenState();
+}
+
+class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
+  final TextEditingController _msgCtrl = TextEditingController();
+
+  Future<void> _sendDirectMessage() async {
+    final text = _msgCtrl.text.trim();
+    if (text.isEmpty) return;
+    _msgCtrl.clear();
+
+    await Supabase.instance.client.from('support_messages').insert({
+      'sender_id': widget.myId,
+      'sender_name': widget.myName,
+      'receiver_id': widget.peerId,
+      'message': text,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+    final isDark = AppPrefs.isDark;
+
+    final stream = Supabase.instance.client
+        .from('support_messages')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: true);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.peerName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            if (widget.peerRole.isNotEmpty)
+              Text(widget.peerRole, style: TextStyle(fontSize: 11, color: accent)),
+          ],
+        ),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: StreamBuilder<List>>(
+              stream: stream,
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                final allMsgs = snapshot.data!;
+                final threadMsgs = allMsgs.where((m) {
+                  final s = (m['sender_id'] ?? '').toString();
+                  final r = (m['receiver_id'] ?? '').toString();
+                  return (s == widget.myId && r == widget.peerId) || (s == widget.peerId && r == widget.myId);
+                }).toList();
+
+                if (threadMsgs.isEmpty) {
+                  return Center(
+                    child: Text(
+                      AppPrefs.tr('ابدأ المحادثة الخاصة الآن بكتابة رسالتك بالأسفل', 'Start your private chat below'),
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: threadMsgs.length,
+                  itemBuilder: (_, i) {
+                    final m = threadMsgs[i];
+                    final isMe = (m['sender_id'] ?? '').toString() == widget.myId;
+                    return Align(
+                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(12),
+                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+                        decoration: BoxDecoration(
+                          color: isMe
+                              ? (isDark ? const Color(0xFF1E3A5F) : const Color(0xFFCCFBF1))
+                              : cardBg,
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(m['sender_name'] ?? '', style: TextStyle(fontSize: 11, color: accent, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 4),
+                            Text(m['message'] ?? '', style: const TextStyle(height: 1.4)),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.all(8),
+            color: cardBg,
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _msgCtrl,
+                    decoration: InputDecoration(
+                      hintText: AppPrefs.tr('اكتب رسالتك الخاصة هنا...', 'Type a private message...'),
+                      border: InputBorder.none,
+                    ),
+                    onSubmitted: (_) => _sendDirectMessage(),
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.send_rounded, color: accent),
+                  onPressed: _sendDirectMessage,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// صندوق وارد الرسائل للمطورين والمناديب للرد على الطلاب
+class SupportInboxScreen extends StatelessWidget {
+  final String myId;
+  final String myName;
+  const SupportInboxScreen({super.key, required this.myId, required this.myName});
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+
+    final stream = Supabase.instance.client
+        .from('support_messages')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false);
+
+    return Scaffold(
+      appBar: AppBar(title: Text(AppPrefs.tr('صندوق رسائل الطلاب', 'Student Support Inbox'))),
+      body: StreamBuilder<List>>(
+        stream: stream,
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          final msgs = snapshot.data!.where((m) => m['receiver_id'] == myId || m['sender_id'] == myId).toList();
+
+          final Map<String, Map<String, dynamic>> conversations = {};
+          for (var m in msgs) {
+            final s = (m['sender_id'] ?? '').toString();
+            final r = (m['receiver_id'] ?? '').toString();
+            final peerId = s == myId ? r : s;
+            if (!conversations.containsKey(peerId)) {
+              conversations[peerId] = {
+                'peerId': peerId,
+                'peerName': s == myId ? 'طالب ($peerId)' : (m['sender_name'] ?? peerId),
+                'lastMessage': m['message'] ?? '',
+              };
+            }
+          }
+
+          if (conversations.isEmpty) {
+            return Center(child: Text(AppPrefs.tr('لا توجد رسائل واردة حالياً', 'No incoming messages yet'), style: const TextStyle(color: Colors.grey)));
+          }
+
+          final list = conversations.values.toList();
+          return ListView.builder(
+            padding: const EdgeInsets.all(14),
+            itemCount: list.length,
+            itemBuilder: (_, i) {
+              final c = list[i];
+              return Card(
+                color: cardBg,
+                margin: const EdgeInsets.only(bottom: 10),
+                child: ListTile(
+                  leading: CircleAvatar(backgroundColor: accent.withOpacity(0.2), child: Icon(Icons.person, color: accent)),
+                  title: Text(c['peerName'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                  subtitle: Text(c['lastMessage'], maxLines: 1, overflow: TextOverflow.ellipsis),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => DirectSupportChatScreen(
+                          myId: myId,
+                          myName: myName,
+                          peerId: c['peerId'],
+                          peerName: c['peerName'],
+                          peerRole: AppPrefs.tr('طالب بالدفعة', 'Batch Student'),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }
