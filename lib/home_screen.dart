@@ -858,7 +858,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => SupportInboxScreen(myId: _studentId, myName: _studentName),
+                          builder: (_) => SupportInboxScreen(myId: _studentId, myName: _studentName, isAdmin: _isAdmin),
                         ),
                       );
                     },
@@ -2315,10 +2315,196 @@ class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
   }
 }
 
-class SupportInboxScreen extends StatelessWidget {
+class SupportInboxScreen extends StatefulWidget {
   final String myId;
   final String myName;
-  const SupportInboxScreen({super.key, required this.myId, required this.myName});
+  final bool isAdmin;
+
+  const SupportInboxScreen({
+    super.key,
+    required this.myId,
+    required this.myName,
+    this.isAdmin = false,
+  });
+
+  @override
+  State<SupportInboxScreen> createState() => _SupportInboxScreenState();
+}
+
+class _SupportInboxScreenState extends State<SupportInboxScreen> {
+  static const String _ownerId = '27094070';
+  bool _allowAdminsDm = false;
+  bool _updatingSetting = false;
+  List<dynamic> _allStudents = [];
+
+  bool get _isOwner => widget.myId.trim() == _ownerId;
+  bool get _canStartNewChat => _isOwner || (widget.isAdmin && _allowAdminsDm);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPermissionsAndStudents();
+  }
+
+  Future<void> _loadPermissionsAndStudents() async {
+    try {
+      final client = Supabase.instance.client;
+      final settingRes = await client
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'allow_admins_dm')
+          .maybeSingle();
+
+      final allow = settingRes != null && settingRes['value'].toString().toLowerCase() == 'true';
+
+      List<dynamic> students = [];
+      if (_isOwner || (widget.isAdmin && allow)) {
+        students = await client
+            .from('students')
+            .select('student_id, full_name')
+            .order('full_name');
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _allowAdminsDm = allow;
+        _allStudents = students;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _toggleAdminsPermission(bool value) async {
+    if (!_isOwner || _updatingSetting) return;
+    setState(() => _updatingSetting = true);
+    try {
+      await Supabase.instance.client.from('app_settings').upsert({
+        'key': 'allow_admins_dm',
+        'value': value.toString(),
+      });
+      if (!mounted) return;
+      setState(() {
+        _allowAdminsDm = value;
+        _updatingSetting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? AppPrefs.tr('تم تفعيل بدء المحادثات لبقية المشرفين ✓', 'Enabled new chats for admins ✓')
+                : AppPrefs.tr('تم حصر بدء المحادثات بالمالك فقط 🔒', 'Restricted new chats to owner only 🔒'),
+          ),
+          backgroundColor: Colors.teal,
+        ),
+      );
+    } catch (_) {
+      if (mounted) setState(() => _updatingSetting = false);
+    }
+  }
+
+  void _openNewStudentChatPicker() {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+    String searchQuery = '';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: cardBg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final filtered = _allStudents.where((s) {
+            final id = (s['student_id'] ?? '').toString();
+            final name = (s['full_name'] ?? '').toString();
+            if (id == widget.myId) return false;
+            if (searchQuery.isEmpty) return true;
+            return name.toLowerCase().contains(searchQuery.toLowerCase()) || id.contains(searchQuery);
+          }).toList();
+
+          return DraggableScrollableSheet(
+            initialChildSize: 0.75,
+            maxChildSize: 0.92,
+            minChildSize: 0.5,
+            expand: false,
+            builder: (_, scrollCtrl) => Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  Text(
+                    AppPrefs.tr('بدء محادثة خاصة مع طالب', 'Start Private Chat with Student'),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: accent),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.search_rounded),
+                      hintText: AppPrefs.tr('ابحث باسم الطالب أو رقم القيد...', 'Search by name or ID...'),
+                      isDense: true,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onChanged: (val) => setSheetState(() => searchQuery = val.trim()),
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: filtered.isEmpty
+                        ? Center(
+                            child: Text(
+                              AppPrefs.tr('لا يوجد طلاب مطابقون للبحث', 'No matching students'),
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          )
+                        : ListView.builder(
+                            controller: scrollCtrl,
+                            itemCount: filtered.length,
+                            itemBuilder: (_, idx) {
+                              final st = filtered[idx];
+                              final targetId = (st['student_id'] ?? '').toString();
+                              final targetName = (st['full_name'] ?? '').toString();
+
+                              return ListTile(
+                                leading: CircleAvatar(
+                                  backgroundColor: accent.withOpacity(0.18),
+                                  child: Icon(Icons.person_rounded, color: accent),
+                                ),
+                                title: Text(targetName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                subtitle: Text(targetId, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                                trailing: Icon(Icons.chat_rounded, color: accent, size: 20),
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => DirectSupportChatScreen(
+                                        myId: widget.myId,
+                                        myName: widget.myName,
+                                        peerId: targetId,
+                                        peerName: targetName,
+                                        peerRole: AppPrefs.tr('طالب بالدفعة', 'Batch Student'),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  String _resolveStudentName(String peerId, String fallback) {
+    for (var st in _allStudents) {
+      if ((st['student_id'] ?? '').toString() == peerId) {
+        return (st['full_name'] ?? fallback).toString();
+      }
+    }
+    return fallback;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2331,65 +2517,115 @@ class SupportInboxScreen extends StatelessWidget {
         .order('created_at', ascending: false);
 
     return Scaffold(
-      appBar: AppBar(title: Text(AppPrefs.tr('صندوق رسائل الطلاب', 'Student Support Inbox'))),
-      body: StreamBuilder(
-        stream: stream,
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-          final rawList = (snapshot.data as List<dynamic>?) ?? [];
-          final msgs = rawList.where((m) => m['receiver_id'] == myId || m['sender_id'] == myId).toList();
-
-          final Map<String, Map<String, dynamic>> conversations = {};
-          for (var m in msgs) {
-            final s = (m['sender_id'] ?? '').toString();
-            final r = (m['receiver_id'] ?? '').toString();
-            final peerId = s == myId ? r : s;
-            if (!conversations.containsKey(peerId)) {
-              conversations[peerId] = {
-                'peerId': peerId,
-                'peerName': s == myId ? 'طالب ($peerId)' : (m['sender_name'] ?? peerId),
-                'lastMessage': m['message'] ?? '',
-              };
-            }
-          }
-
-          if (conversations.isEmpty) {
-            return Center(child: Text(AppPrefs.tr('لا توجد رسائل واردة حالياً', 'No incoming messages yet'), style: const TextStyle(color: Colors.grey)));
-          }
-
-          final list = conversations.values.toList();
-          return ListView.builder(
-            padding: const EdgeInsets.all(14),
-            itemCount: list.length,
-            itemBuilder: (_, i) {
-              final c = list[i];
-              return Card(
+      appBar: AppBar(
+        title: Text(AppPrefs.tr('صندوق رسائل الطلاب', 'Student Support Inbox')),
+      ),
+      floatingActionButton: _canStartNewChat
+          ? FloatingActionButton.extended(
+              backgroundColor: accent,
+              foregroundColor: Colors.black,
+              icon: const Icon(Icons.add_comment_rounded),
+              label: Text(AppPrefs.tr('محادثة جديدة', 'New Chat'), style: const TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: _openNewStudentChatPicker,
+            )
+          : null,
+      body: Column(
+        children: [
+          if (_isOwner)
+            Container(
+              margin: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
                 color: cardBg,
-                margin: const EdgeInsets.only(bottom: 10),
-                child: ListTile(
-                  leading: CircleAvatar(backgroundColor: accent.withOpacity(0.2), child: Icon(Icons.person, color: accent)),
-                  title: Text(c['peerName'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text(c['lastMessage'], maxLines: 1, overflow: TextOverflow.ellipsis),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => DirectSupportChatScreen(
-                          myId: myId,
-                          myName: myName,
-                          peerId: c['peerId'],
-                          peerName: c['peerName'],
-                          peerRole: AppPrefs.tr('طالب بالدفعة', 'Batch Student'),
-                        ),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: accent.withOpacity(0.35)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.admin_panel_settings_rounded, color: accent, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      AppPrefs.tr('السماح للمشرفين ببدء محادثات جديدة مع الطلاب', 'Allow admins to start new student chats'),
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  Switch(
+                    value: _allowAdminsDm,
+                    activeColor: accent,
+                    onChanged: _updatingSetting ? null : _toggleAdminsPermission,
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: StreamBuilder(
+              stream: stream,
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+                final rawList = (snapshot.data as List<dynamic>?) ?? [];
+                final msgs = rawList.where((m) => m['receiver_id'] == widget.myId || m['sender_id'] == widget.myId).toList();
+
+                final Map<String, Map<String, dynamic>> conversations = {};
+                for (var m in msgs) {
+                  final s = (m['sender_id'] ?? '').toString();
+                  final r = (m['receiver_id'] ?? '').toString();
+                  final peerId = s == widget.myId ? r : s;
+                  if (!conversations.containsKey(peerId)) {
+                    final rawName = s == widget.myId ? _resolveStudentName(peerId, 'طالب ($peerId)') : (m['sender_name'] ?? peerId);
+                    conversations[peerId] = {
+                      'peerId': peerId,
+                      'peerName': rawName,
+                      'lastMessage': m['message'] ?? '',
+                    };
+                  }
+                }
+
+                if (conversations.isEmpty) {
+                  return Center(
+                    child: Text(
+                      AppPrefs.tr('لا توجد رسائل واردة حالياً', 'No incoming messages yet'),
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  );
+                }
+
+                final list = conversations.values.toList();
+                return ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
+                  itemCount: list.length,
+                  itemBuilder: (_, i) {
+                    final c = list[i];
+                    return Card(
+                      color: cardBg,
+                      margin: const EdgeInsets.only(bottom: 10),
+                      child: ListTile(
+                        leading: CircleAvatar(backgroundColor: accent.withOpacity(0.2), child: Icon(Icons.person, color: accent)),
+                        title: Text(c['peerName'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text(c['lastMessage'], maxLines: 1, overflow: TextOverflow.ellipsis),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => DirectSupportChatScreen(
+                                myId: widget.myId,
+                                myName: widget.myName,
+                                peerId: c['peerId'],
+                                peerName: c['peerName'],
+                                peerRole: AppPrefs.tr('طالب بالدفعة', 'Batch Student'),
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     );
                   },
-                ),
-              );
-            },
-          );
-        },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
