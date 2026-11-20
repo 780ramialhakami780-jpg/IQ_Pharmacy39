@@ -16,13 +16,17 @@ class AdminScreen extends StatefulWidget {
 }
 
 class _AdminScreenState extends State<AdminScreen> {
+  static const String _ownerId = '27094070';
   final _client = Supabase.instance.client;
+  String _myStudentId = '';
   List<dynamic> _subjects = [];
   List<dynamic> _attendance = [];
   List<dynamic> _announcements = [];
   List<dynamic> _supportContacts = [];
   Map<String, String> _studentEmails = {};
   bool _isLoading = false;
+
+  bool get _isOwner => _myStudentId.trim() == _ownerId;
 
   @override
   void initState() {
@@ -32,6 +36,9 @@ class _AdminScreenState extends State<AdminScreen> {
 
   Future<void> _fetchInitialData() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final myId = prefs.getString('student_id') ?? '';
+
       final subjs = await _client.from('subjects').select().order('sort_order');
       final att = await _client.from('attendance').select().order('created_at', ascending: false).limit(500);
       List<dynamic> anns = [];
@@ -57,6 +64,7 @@ class _AdminScreenState extends State<AdminScreen> {
 
       if (!mounted) return;
       setState(() {
+        _myStudentId = myId;
         _subjects = subjs;
         _attendance = att;
         _announcements = anns;
@@ -70,6 +78,85 @@ class _AdminScreenState extends State<AdminScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(text), backgroundColor: isError ? Colors.redAccent : Colors.teal),
+    );
+  }
+
+  Future<void> _promptAndUnlinkDevice(Map<String, dynamic> st, VoidCallback onUnlinked) async {
+    final targetId = (st['student_id'] ?? '').toString().trim();
+    final targetName = (st['full_name'] ?? '').toString();
+    final targetIsAdmin = st['is_admin'] == true;
+
+    if (targetId == _ownerId || targetIsAdmin) {
+      _showMsg('حساب المالك والمشرفين محمي ولا يمكن فك ارتباطه نهائياً', isError: true);
+      return;
+    }
+
+    String requiredPin = '9988';
+    try {
+      final res = await _client
+          .from('app_settings')
+          .select('value')
+          .eq('key', 'unlink_pin')
+          .maybeSingle();
+      if (res != null && res['value'] != null && res['value'].toString().trim().isNotEmpty) {
+        requiredPin = res['value'].toString().trim();
+      }
+    } catch (_) {}
+
+    if (!mounted) return;
+    final pinCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('تأكيد فك ارتباط الجهاز'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('الطالب: $targetName', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            Text('رقم القيد: $targetId', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 14),
+            const Text('أدخل كلمة مرور فك الارتباط للمتابعة:', style: TextStyle(fontSize: 12)),
+            const SizedBox(height: 8),
+            TextField(
+              controller: pinCtrl,
+              keyboardType: TextInputType.number,
+              obscureText: true,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 20, letterSpacing: 4),
+              decoration: const InputDecoration(
+                hintText: '••••',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.black),
+            onPressed: () async {
+              if (pinCtrl.text.trim() != requiredPin) {
+                _showMsg('كلمة مرور فك الارتباط غير صحيحة!', isError: true);
+                return;
+              }
+              Navigator.pop(dialogCtx);
+              try {
+                await _client.from('students').update({'device_id': null}).eq('student_id', targetId);
+                onUnlinked();
+                _showMsg('تم فك ارتباط الجهاز بنجاح، يمكن للطالب الدخول من هاتفه الجديد الآن');
+              } catch (_) {
+                _showMsg('فشل فك الارتباط من قاعدة البيانات', isError: true);
+              }
+            },
+            child: const Text('تأكيد وفك القفل', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -719,7 +806,7 @@ class _AdminScreenState extends State<AdminScreen> {
             child: const Text('حفظ بيانات النبذة'),
           ),
           const Divider(height: 36),
-          const Text('📱 فك ارتباط هاتف طالب (تصفير device_id)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const Text('📱 فك ارتباط هاتف طالب (محمي بكلمة مرور)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
           const SizedBox(height: 10),
           Row(
             children: [
@@ -752,27 +839,35 @@ class _AdminScreenState extends State<AdminScreen> {
           ),
           const SizedBox(height: 10),
           ...foundStudents.map((st) {
+            final sid = (st['student_id'] ?? '').toString().trim();
             final hasDevice = st['device_id'] != null && st['device_id'].toString().isNotEmpty;
+            final isProtected = sid == _ownerId || st['is_admin'] == true;
+
             return Card(
               margin: const EdgeInsets.only(bottom: 8),
               child: ListTile(
                 title: Text(st['full_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: Text('رقم القيد: ${st['student_id']} • ${hasDevice ? 'مرتبط بهاتف' : 'غير مرتبط'}'),
-                trailing: ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: hasDevice ? Colors.orange : Colors.grey, foregroundColor: Colors.black),
-                  onPressed: !hasDevice
-                      ? null
-                      : () async {
-                          try {
-                            await _client.from('students').update({'device_id': null}).eq('student_id', st['student_id']);
-                            setInnerState(() => st['device_id'] = null);
-                            _showMsg('تم فك ارتباط الجهاز بنجاح، يمكن للطالب الدخول من هاتفه الجديد الآن');
-                          } catch (_) {
-                            _showMsg('فشل فك الارتباط', isError: true);
-                          }
-                        },
-                  child: const Text('فك القفل'),
+                subtitle: Text(
+                  'رقم القيد: $sid • ${isProtected ? 'حساب مشرف/مالك محمي' : (hasDevice ? 'مرتبط بهاتف' : 'غير مرتبط')}',
                 ),
+                trailing: isProtected
+                    ? const Chip(
+                        avatar: Icon(Icons.verified_user_rounded, size: 16, color: Colors.teal),
+                        label: Text('محمي', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                      )
+                    : ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: hasDevice ? Colors.orange : Colors.grey,
+                          foregroundColor: Colors.black,
+                        ),
+                        onPressed: !hasDevice
+                            ? null
+                            : () => _promptAndUnlinkDevice(
+                                  Map<String, dynamic>.from(st),
+                                  () => setInnerState(() => st['device_id'] = null),
+                                ),
+                        child: const Text('فك القفل'),
+                      ),
               ),
             );
           }),
@@ -827,6 +922,7 @@ class _AdminScreenState extends State<AdminScreen> {
   // 6. تبويب تغيير الرمز السري للإدارة
   Widget _buildChangePinTab() {
     final pinCtrl = TextEditingController();
+
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -838,7 +934,7 @@ class _AdminScreenState extends State<AdminScreen> {
           TextField(
             controller: pinCtrl,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'الرمز السري الجديد (أرقام)', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: 'الرمز السري الجديد للوحة الإدارة (أرقام)', border: OutlineInputBorder()),
           ),
           const SizedBox(height: 16),
           SizedBox(
@@ -849,17 +945,15 @@ class _AdminScreenState extends State<AdminScreen> {
               onPressed: () async {
                 final newPin = pinCtrl.text.trim();
                 if (newPin.length < 4) return;
-                await Supabase.instance.client
+                await _client
                     .from('app_settings')
                     .upsert({'key': 'admin_pin', 'value': newPin});
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString('admin_pin', newPin);
                 if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم تحديث الرمز السري العام لجميع المشرفين بنجاح'), backgroundColor: Colors.teal),
-                );
+                _showMsg('تم تحديث الرمز السري العام لجميع المشرفين بنجاح');
               },
-              child: const Text('حفظ الرمز الجديد للجميع', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text('حفظ رمز الإدارة الجديد', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ),
         ],
