@@ -163,7 +163,7 @@ class _AdminScreenState extends State<AdminScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 6,
+      length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('لوحة إدارة الدفعة السرية'),
@@ -177,7 +177,6 @@ class _AdminScreenState extends State<AdminScreen> {
               Tab(text: 'بنك الأسئلة'),
               Tab(text: 'الجدول وكشف الحضور'),
               Tab(text: 'الدعم والأجهزة والدليل'),
-              Tab(text: 'الرمز السري'),
             ],
           ),
         ),
@@ -190,7 +189,6 @@ class _AdminScreenState extends State<AdminScreen> {
                   _buildAddQuestionTab(),
                   _buildScheduleAndAttendanceTab(),
                   _buildDevicesAndDirectoryTab(),
-                  _buildChangePinTab(),
                 ],
               ),
       ),
@@ -919,45 +917,5 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 6. تبويب تغيير الرمز السري للإدارة
-  Widget _buildChangePinTab() {
-    final pinCtrl = TextEditingController();
 
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          const Text('تغيير الرمز السري العام للوحة الإدارة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          const Text('سيتم تحديث الرمز تلقائياً عند جميع المشرفين في الدفعة.', style: TextStyle(fontSize: 12, color: Colors.grey)),
-          const SizedBox(height: 16),
-          TextField(
-            controller: pinCtrl,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'الرمز السري الجديد للوحة الإدارة (أرقام)', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            height: 48,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
-              onPressed: () async {
-                final newPin = pinCtrl.text.trim();
-                if (newPin.length < 4) return;
-                await _client
-                    .from('app_settings')
-                    .upsert({'key': 'admin_pin', 'value': newPin});
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.setString('admin_pin', newPin);
-                if (!mounted) return;
-                _showMsg('تم تحديث الرمز السري العام لجميع المشرفين بنجاح');
-              },
-              child: const Text('حفظ رمز الإدارة الجديد', style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
