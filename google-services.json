@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "71655473248",
+    "project_id": "iq-pharmacy39",
+    "storage_bucket": "iq-pharmacy39.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:71655473248:android:a40c69ee320fbe3b1b4305",
+        "android_client_info": {
+          "package_name": "ye.su.iq_pharmacy39"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCcJq_9LuglxvKzLYVCRGOJzQJLL9BW4mA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
