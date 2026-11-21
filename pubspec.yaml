@@ -26,8 +26,8 @@ dependencies:
   google_fonts: ^6.2.1
   image_picker: ^1.1.2
   share_plus: ^10.0.0
-  flutter_local_notifications: ^17.2.2
-  workmanager: ^0.5.2
+  flutter_local_notifications: any
+  workmanager: any
 
 dev_dependencies:
   flutter_test:
