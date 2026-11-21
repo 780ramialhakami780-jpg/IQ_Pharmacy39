@@ -10,6 +10,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'app_prefs.dart';
 import 'home_screen.dart';
+import 'notification_service.dart';
 
 const String supabaseUrl = 'https://stvavavzjrcxcivxykfv.supabase.co';
 const String supabaseAnonKey = 'sb_publishable_2D5B4SJgPAwqZqqgpiFaMA_HzTlka-k';
@@ -18,6 +19,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
   await AppPrefs.load();
+  await NotificationService.init();
+
   final prefs = await SharedPreferences.getInstance();
   final bool isRegistered = prefs.getBool('is_registered') ?? false;
 
@@ -92,7 +95,6 @@ class IQPharmacyApp extends StatelessWidget {
       );
     }
 
-    // الافتراضي: dark
     final base = ThemeData.dark(useMaterial3: true);
     return base.copyWith(
       scaffoldBackgroundColor: hasWallpaper ? Colors.transparent : const Color(0xFF0F1115),
@@ -157,7 +159,6 @@ class IQPharmacyApp extends StatelessWidget {
   }
 }
 
-// شاشة القفل برمز PIN مع ميزة استعادة الرمز
 class PinLockScreen extends StatefulWidget {
   const PinLockScreen({super.key});
 
@@ -564,6 +565,8 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
         await prefs.setString('university_email', _foundStudent!['university_email'].toString());
       }
 
+      await NotificationService.init();
+
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -586,7 +589,6 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // زر نبذة عن التطبيق والمطور في الأعلى
             Padding(
               padding: const EdgeInsets.only(top: 12, left: 16, right: 16),
               child: Align(
