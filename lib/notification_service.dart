@@ -49,7 +49,6 @@ class NotificationService {
       _bgTaskName,
       frequency: const Duration(minutes: 15),
       constraints: Constraints(networkType: NetworkType.connected),
-      existingWorkPolicy: ExistingWorkPolicy.keep,
     );
 
     await checkForNewUpdates();
@@ -100,7 +99,6 @@ class NotificationService {
 
       final client = Supabase.instance.client;
 
-      // 1. الإشعارات العامة، التكاليف، الإعلانات، الجدول، والملفات
       if (academicEnabled) {
         await _checkTableLatest(
           client: client,
@@ -168,7 +166,6 @@ class NotificationService {
         );
       }
 
-      // 2. الرسائل الخاصة (للمشرفين في صندوق الدعم وللطالب عند رد المشرف)
       if (supportEnabled && myId.isNotEmpty) {
         try {
           final latestDm = await client
@@ -198,7 +195,6 @@ class NotificationService {
         } catch (_) {}
       }
 
-      // 3. دردشة الدفعة العامة (تتوقف إذا فعّل الطالب زر الكتم)
       if (!batchChatMuted && myId.isNotEmpty) {
         for (final chatTable in ['batch_chat', 'chat_messages']) {
           try {
