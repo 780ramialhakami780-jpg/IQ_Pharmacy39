@@ -12,6 +12,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'app_prefs.dart';
 import 'subject_screen.dart';
 import 'admin_screen.dart';
@@ -1294,6 +1295,84 @@ class _HomeScreenState extends State<HomeScreen> {
               body: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                                    FutureBuilder<SharedPreferences>(
+                    future: SharedPreferences.getInstance(),
+                    builder: (context, snap) {
+                      final prefs = snap.data;
+                      final masterOn = prefs?.getBool('notif_master_enabled') ?? true;
+                      final academicOn = prefs?.getBool('notif_academic_enabled') ?? true;
+                      final supportOn = prefs?.getBool('notif_support_enabled') ?? true;
+                      final chatMuted = prefs?.getBool('notif_batch_chat_muted') ?? false;
+
+                      return Card(
+                        color: cardBg,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        child: ExpansionTile(
+                          leading: Icon(Icons.notifications_active_rounded, color: accent),
+                          title: Text(AppPrefs.tr('إعدادات الإشعارات', 'Notification Settings'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text(AppPrefs.tr('التحكم في إشعارات الدفعة، التكاليف، والدردشة', 'Alerts, assignments & chat mute'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          children: [
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(AppPrefs.tr('تفعيل جميع الإشعارات', 'Enable All Notifications'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                              value: masterOn,
+                              onChanged: prefs == null
+                                  ? null
+                                  : (v) async {
+                                      await prefs.setBool('notif_master_enabled', v);
+                                      setSettingsState(() {});
+                                    },
+                            ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(AppPrefs.tr('إشعارات الدفعة والتكاليف والجدول', 'Batch Alerts, Tasks & Schedule')),
+                              value: academicOn,
+                              onChanged: (prefs == null || !masterOn)
+                                  ? null
+                                  : (v) async {
+                                      await prefs.setBool('notif_academic_enabled', v);
+                                      setSettingsState(() {});
+                                    },
+                            ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(AppPrefs.tr('إشعارات الرسائل الخاصة والدعم', 'Direct Support Messages')),
+                              value: supportOn,
+                              onChanged: (prefs == null || !masterOn)
+                                  ? null
+                                  : (v) async {
+                                      await prefs.setBool('notif_support_enabled', v);
+                                      setSettingsState(() {});
+                                    },
+                            ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(AppPrefs.tr('كتم إشعارات دردشة الدفعة', 'Mute Batch Chat Notifications')),
+                              value: chatMuted,
+                              onChanged: (prefs == null || !masterOn)
+                                  ? null
+                                  : (v) async {
+                                      await prefs.setBool('notif_batch_chat_muted', v);
+                                      setSettingsState(() {});
+                                    },
+                            ),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                icon: Icon(Icons.settings_applications_rounded, color: accent),
+                                label: Text(AppPrefs.tr('فتح أذونات الإشعارات في إعدادات الهاتف', 'Open System Notification Settings')),
+                                onPressed: () => openAppSettings(),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 10),
+
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2043,11 +2122,39 @@ class BatchChatScreen extends StatefulWidget {
 class _BatchChatScreenState extends State<BatchChatScreen> {
   final TextEditingController _msgCtrl = TextEditingController();
   late String _nickname;
+  bool _isChatMuted = false;
 
   @override
   void initState() {
     super.initState();
     _nickname = widget.defaultName.split(' ').take(2).join(' ');
+    _loadMuteState();
+  }
+
+  Future<void> _loadMuteState() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _isChatMuted = prefs.getBool('notif_batch_chat_muted') ?? false;
+    });
+  }
+
+  Future<void> _toggleChatMute() async {
+    final prefs = await SharedPreferences.getInstance();
+    final nextVal = !_isChatMuted;
+    await prefs.setBool('notif_batch_chat_muted', nextVal);
+    if (!mounted) return;
+    setState(() => _isChatMuted = nextVal);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          nextVal
+              ? AppPrefs.tr('تم كتم إشعارات دردشة الدفعة 🔕', 'Batch chat notifications muted 🔕')
+              : AppPrefs.tr('تم تفعيل إشعارات دردشة الدفعة 🔔', 'Batch chat notifications unmuted 🔔'),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   Future<void> _sendMessage() async {
@@ -2082,6 +2189,16 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
       appBar: AppBar(
         title: Text(AppPrefs.tr('دردشة الدفعة', 'Batch Chat')),
         actions: [
+          IconButton(
+            tooltip: _isChatMuted
+                ? AppPrefs.tr('إلغاء كتم إشعارات الدردشة', 'Unmute Chat')
+                : AppPrefs.tr('كتم إشعارات الدردشة', 'Mute Chat'),
+            icon: Icon(
+              _isChatMuted ? Icons.notifications_off_rounded : Icons.notifications_active_rounded,
+              color: _isChatMuted ? Colors.amber : accent,
+            ),
+            onPressed: _toggleChatMute,
+          ),
           TextButton(
             onPressed: () {
               final ctrl = TextEditingController(text: _nickname);
