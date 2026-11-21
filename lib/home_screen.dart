@@ -2195,18 +2195,66 @@ class DirectSupportChatScreen extends StatefulWidget {
 
 class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
   final TextEditingController _msgCtrl = TextEditingController();
+  List<dynamic> _threadMsgs = [];
+  bool _loading = true;
+  bool _sending = false;
+  Timer? _pollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchMessages();
+    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _fetchMessages(silent: true));
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _msgCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchMessages({bool silent = false}) async {
+    try {
+      final data = await Supabase.instance.client
+          .from('support_messages')
+          .select()
+          .or('and(sender_id.eq.${widget.myId},receiver_id.eq.${widget.peerId}),and(sender_id.eq.${widget.peerId},receiver_id.eq.${widget.myId})')
+          .order('created_at', ascending: true);
+
+      if (!mounted) return;
+      setState(() {
+        _threadMsgs = data;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!silent && mounted) setState(() => _loading = false);
+    }
+  }
 
   Future<void> _sendDirectMessage() async {
     final text = _msgCtrl.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty || _sending) return;
+    setState(() => _sending = true);
     _msgCtrl.clear();
 
-    await Supabase.instance.client.from('support_messages').insert({
-      'sender_id': widget.myId,
-      'sender_name': widget.myName,
-      'receiver_id': widget.peerId,
-      'message': text,
-    });
+    try {
+      await Supabase.instance.client.from('support_messages').insert({
+        'sender_id': widget.myId,
+        'sender_name': widget.myName,
+        'receiver_id': widget.peerId,
+        'message': text,
+      });
+      await _fetchMessages(silent: true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AppPrefs.tr('تعذر إرسال الرسالة، تحقق من الاتصال', 'Failed to send message')), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   @override
@@ -2214,11 +2262,6 @@ class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
     final isDark = AppPrefs.isDark;
-
-    final stream = Supabase.instance.client
-        .from('support_messages')
-        .stream(primaryKey: ['id'])
-        .order('created_at', ascending: true);
 
     return Scaffold(
       appBar: AppBar(
@@ -2234,58 +2277,45 @@ class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: StreamBuilder(
-              stream: stream,
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                final allMsgs = (snapshot.data as List<dynamic>?) ?? [];
-                final threadMsgs = allMsgs.where((m) {
-                  final s = (m['sender_id'] ?? '').toString();
-                  final r = (m['receiver_id'] ?? '').toString();
-                  return (s == widget.myId && r == widget.peerId) || (s == widget.peerId && r == widget.myId);
-                }).toList();
-
-                if (threadMsgs.isEmpty) {
-                  return Center(
-                    child: Text(
-                      AppPrefs.tr('ابدأ المحادثة الخاصة الآن بكتابة رسالتك بالأسفل', 'Start your private chat below'),
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  );
-                }
-
-                return ListView.builder(
-                  padding: const EdgeInsets.all(12),
-                  itemCount: threadMsgs.length,
-                  itemBuilder: (_, i) {
-                    final m = threadMsgs[i];
-                    final isMe = (m['sender_id'] ?? '').toString() == widget.myId;
-                    return Align(
-                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 8),
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _threadMsgs.isEmpty
+                    ? Center(
+                        child: Text(
+                          AppPrefs.tr('ابدأ المحادثة الخاصة الآن بكتابة رسالتك بالأسفل', 'Start your private chat below'),
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      )
+                    : ListView.builder(
                         padding: const EdgeInsets.all(12),
-                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-                        decoration: BoxDecoration(
-                          color: isMe
-                              ? (isDark ? const Color(0xFF1E3A5F) : const Color(0xFFCCFBF1))
-                              : cardBg,
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(m['sender_name'] ?? '', style: TextStyle(fontSize: 11, color: accent, fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 4),
-                            Text(m['message'] ?? '', style: const TextStyle(height: 1.4)),
-                          ],
-                        ),
+                        itemCount: _threadMsgs.length,
+                        itemBuilder: (_, i) {
+                          final m = _threadMsgs[i];
+                          final isMe = (m['sender_id'] ?? '').toString() == widget.myId;
+                          return Align(
+                            alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              padding: const EdgeInsets.all(12),
+                              constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+                              decoration: BoxDecoration(
+                                color: isMe
+                                    ? (isDark ? const Color(0xFF1E3A5F) : const Color(0xFFCCFBF1))
+                                    : cardBg,
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(m['sender_name'] ?? '', style: TextStyle(fontSize: 11, color: accent, fontWeight: FontWeight.bold)),
+                                  const SizedBox(height: 4),
+                                  Text(m['message'] ?? '', style: const TextStyle(height: 1.4)),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
-                );
-              },
-            ),
           ),
           Container(
             padding: const EdgeInsets.all(8),
@@ -2303,7 +2333,9 @@ class _DirectSupportChatScreenState extends State<DirectSupportChatScreen> {
                   ),
                 ),
                 IconButton(
-                  icon: Icon(Icons.send_rounded, color: accent),
+                  icon: _sending
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      : Icon(Icons.send_rounded, color: accent),
                   onPressed: _sendDirectMessage,
                 ),
               ],
@@ -2335,7 +2367,10 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
   static const String _ownerId = '27094070';
   bool _allowAdminsDm = false;
   bool _updatingSetting = false;
+  bool _loadingInbox = true;
   List<dynamic> _allStudents = [];
+  List> _conversations = [];
+  Timer? _inboxTimer;
 
   bool get _isOwner => widget.myId.trim() == _ownerId;
   bool get _canStartNewChat => _isOwner || (widget.isAdmin && _allowAdminsDm);
@@ -2343,7 +2378,21 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
   @override
   void initState() {
     super.initState();
-    _loadPermissionsAndStudents();
+    _loadInitialData();
+    _inboxTimer = Timer.periodic(const Duration(seconds: 4), (_) => _fetchConversations(silent: true));
+  }
+
+  @override
+  void dispose() {
+    _inboxTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadInitialData() async {
+    await Future.wait([
+      _loadPermissionsAndStudents(),
+      _fetchConversations(),
+    ]);
   }
 
   Future<void> _loadPermissionsAndStudents() async {
@@ -2373,19 +2422,63 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
     } catch (_) {}
   }
 
+  String _resolveStudentName(String peerId, String fallback) {
+    for (var st in _allStudents) {
+      if ((st['student_id'] ?? '').toString() == peerId) {
+        return (st['full_name'] ?? fallback).toString();
+      }
+    }
+    return fallback;
+  }
+
+  Future<void> _fetchConversations({bool silent = false}) async {
+    try {
+      final rawList = await Supabase.instance.client
+          .from('support_messages')
+          .select()
+          .or('receiver_id.eq.${widget.myId},sender_id.eq.${widget.myId}')
+          .order('created_at', ascending: false);
+
+      final Map<String, Map<String, dynamic>> convMap = {};
+      for (var m in rawList) {
+        final s = (m['sender_id'] ?? '').toString();
+        final r = (m['receiver_id'] ?? '').toString();
+        final peerId = s == widget.myId ? r : s;
+        if (!convMap.containsKey(peerId)) {
+          final rawName = s == widget.myId
+              ? _resolveStudentName(peerId, 'طالب ($peerId)')
+              : (m['sender_name'] ?? peerId);
+          convMap[peerId] = {
+            'peerId': peerId,
+            'peerName': rawName,
+            'lastMessage': m['message'] ?? '',
+          };
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _conversations = convMap.values.toList();
+        _loadingInbox = false;
+      });
+    } catch (_) {
+      if (!silent && mounted) setState(() => _loadingInbox = false);
+    }
+  }
+
   Future<void> _toggleAdminsPermission(bool value) async {
     if (!_isOwner || _updatingSetting) return;
-    setState(() => _updatingSetting = true);
+    setState(() {
+      _updatingSetting = true;
+      _allowAdminsDm = value;
+    });
     try {
       await Supabase.instance.client.from('app_settings').upsert({
         'key': 'allow_admins_dm',
         'value': value.toString(),
       });
       if (!mounted) return;
-      setState(() {
-        _allowAdminsDm = value;
-        _updatingSetting = false;
-      });
+      setState(() => _updatingSetting = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -2396,8 +2489,18 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
           backgroundColor: Colors.teal,
         ),
       );
-    } catch (_) {
-      if (mounted) setState(() => _updatingSetting = false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _allowAdminsDm = !value;
+        _updatingSetting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppPrefs.tr('فشل حفظ الإعداد في قاعدة البيانات', 'Failed to update setting')),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -2469,9 +2572,9 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
                                 title: Text(targetName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                                 subtitle: Text(targetId, style: const TextStyle(fontSize: 12, color: Colors.grey)),
                                 trailing: Icon(Icons.chat_rounded, color: accent, size: 20),
-                                onTap: () {
+                                onTap: () async {
                                   Navigator.pop(ctx);
-                                  Navigator.push(
+                                  await Navigator.push(
                                     context,
                                     MaterialPageRoute(
                                       builder: (_) => DirectSupportChatScreen(
@@ -2483,6 +2586,7 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
                                       ),
                                     ),
                                   );
+                                  _fetchConversations(silent: true);
                                 },
                               );
                             },
@@ -2497,24 +2601,10 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
     );
   }
 
-  String _resolveStudentName(String peerId, String fallback) {
-    for (var st in _allStudents) {
-      if ((st['student_id'] ?? '').toString() == peerId) {
-        return (st['full_name'] ?? fallback).toString();
-      }
-    }
-    return fallback;
-  }
-
   @override
   Widget build(BuildContext context) {
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
-
-    final stream = Supabase.instance.client
-        .from('support_messages')
-        .stream(primaryKey: ['id'])
-        .order('created_at', ascending: false);
 
     return Scaffold(
       appBar: AppBar(
@@ -2559,71 +2649,47 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
               ),
             ),
           Expanded(
-            child: StreamBuilder(
-              stream: stream,
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                final rawList = (snapshot.data as List<dynamic>?) ?? [];
-                final msgs = rawList.where((m) => m['receiver_id'] == widget.myId || m['sender_id'] == widget.myId).toList();
-
-                final Map<String, Map<String, dynamic>> conversations = {};
-                for (var m in msgs) {
-                  final s = (m['sender_id'] ?? '').toString();
-                  final r = (m['receiver_id'] ?? '').toString();
-                  final peerId = s == widget.myId ? r : s;
-                  if (!conversations.containsKey(peerId)) {
-                    final rawName = s == widget.myId ? _resolveStudentName(peerId, 'طالب ($peerId)') : (m['sender_name'] ?? peerId);
-                    conversations[peerId] = {
-                      'peerId': peerId,
-                      'peerName': rawName,
-                      'lastMessage': m['message'] ?? '',
-                    };
-                  }
-                }
-
-                if (conversations.isEmpty) {
-                  return Center(
-                    child: Text(
-                      AppPrefs.tr('لا توجد رسائل واردة حالياً', 'No incoming messages yet'),
-                      style: const TextStyle(color: Colors.grey),
-                    ),
-                  );
-                }
-
-                final list = conversations.values.toList();
-                return ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
-                  itemCount: list.length,
-                  itemBuilder: (_, i) {
-                    final c = list[i];
-                    return Card(
-                      color: cardBg,
-                      margin: const EdgeInsets.only(bottom: 10),
-                      child: ListTile(
-                        leading: CircleAvatar(backgroundColor: accent.withOpacity(0.2), child: Icon(Icons.person, color: accent)),
-                        title: Text(c['peerName'], style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text(c['lastMessage'], maxLines: 1, overflow: TextOverflow.ellipsis),
-                        trailing: const Icon(Icons.chevron_right_rounded),
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => DirectSupportChatScreen(
-                                myId: widget.myId,
-                                myName: widget.myName,
-                                peerId: c['peerId'],
-                                peerName: c['peerName'],
-                                peerRole: AppPrefs.tr('طالب بالدفعة', 'Batch Student'),
-                              ),
+            child: _loadingInbox
+                ? const Center(child: CircularProgressIndicator())
+                : _conversations.isEmpty
+                    ? Center(
+                        child: Text(
+                          AppPrefs.tr('لا توجد رسائل واردة حالياً', 'No incoming messages yet'),
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(14, 10, 14, 80),
+                        itemCount: _conversations.length,
+                        itemBuilder: (_, i) {
+                          final c = _conversations[i];
+                          return Card(
+                            color: cardBg,
+                            margin: const EdgeInsets.only(bottom: 10),
+                            child: ListTile(
+                              leading: CircleAvatar(backgroundColor: accent.withOpacity(0.2), child: Icon(Icons.person, color: accent)),
+                              title: Text(c['peerName'], style: const TextStyle(fontWeight: FontWeight.bold)),
+                              subtitle: Text(c['lastMessage'], maxLines: 1, overflow: TextOverflow.ellipsis),
+                              trailing: const Icon(Icons.chevron_right_rounded),
+                              onTap: () async {
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => DirectSupportChatScreen(
+                                      myId: widget.myId,
+                                      myName: widget.myName,
+                                      peerId: c['peerId'],
+                                      peerName: c['peerName'],
+                                      peerRole: AppPrefs.tr('طالب بالدفعة', 'Batch Student'),
+                                    ),
+                                  ),
+                                );
+                                _fetchConversations(silent: true);
+                              },
                             ),
                           );
                         },
                       ),
-                    );
-                  },
-                );
-              },
-            ),
           ),
         ],
       ),
