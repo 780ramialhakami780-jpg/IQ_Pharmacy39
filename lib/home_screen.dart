@@ -2368,8 +2368,8 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
   bool _allowAdminsDm = false;
   bool _updatingSetting = false;
   bool _loadingInbox = true;
-  List<dynamic> _allStudents = [];
-  List> _conversations = [];
+  List _allStudents = [];
+  List _conversations = [];
   Timer? _inboxTimer;
 
   bool get _isOwner => widget.myId.trim() == _ownerId;
@@ -2406,7 +2406,7 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
 
       final allow = settingRes != null && settingRes['value'].toString().toLowerCase() == 'true';
 
-      List<dynamic> students = [];
+      List students = [];
       if (_isOwner || (widget.isAdmin && allow)) {
         students = await client
             .from('students')
