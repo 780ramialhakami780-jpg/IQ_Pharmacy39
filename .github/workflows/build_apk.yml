@@ -33,15 +33,40 @@ jobs:
           if [ -f google-services.json ]; then
             cp google-services.json android/app/google-services.json
           fi
-          if [ -f android/settings.gradle.kts ]; then
-            sed -i 's/id("com.android.application")/id("com.android.application")\n    id("com.google.gms.google-services") version "4.4.2" apply false/' android/settings.gradle.kts
-          fi
-          if [ -f android/app/build.gradle.kts ]; then
-            sed -i 's/id("com.android.application")/id("com.android.application")\n    id("com.google.gms.google-services")/' android/app/build.gradle.kts
-            printf '\nandroid {\n  compileSdk = 37\n  compileOptions {\n    isCoreLibraryDesugaringEnabled = true\n  }\n}\ndependencies {\n  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' >> android/app/build.gradle.kts
-          elif [ -f android/app/build.gradle ]; then
-            printf '\nandroid {\n  compileSdk 37\n  compileOptions {\n    coreLibraryDesugaringEnabled true\n  }\n}\ndependencies {\n  coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"\n}\n' >> android/app/build.gradle
-          fi
+          python3 - << 'EOF'
+          import os, re
+
+          if os.path.exists("android/settings.gradle.kts"):
+              with open("android/settings.gradle.kts", "r") as f:
+                  s = f.read()
+              s = re.sub(
+                  r'(id\("com\.android\.application"\)[^\n]*)',
+                  r'\1\n    id("com.google.gms.google-services") version "4.4.2" apply false',
+                  s,
+                  count=1
+              )
+              with open("android/settings.gradle.kts", "w") as f:
+                  f.write(s)
+
+          if os.path.exists("android/app/build.gradle.kts"):
+              with open("android/app/build.gradle.kts", "r") as f:
+                  b = f.read()
+              b = re.sub(
+                  r'(id\("com\.android\.application"\)[^\n]*)',
+                  r'\1\n    id("com.google.gms.google-services")',
+                  b,
+                  count=1
+              )
+              b += '\nandroid {\n  compileSdk = 37\n  compileOptions {\n    isCoreLibraryDesugaringEnabled = true\n  }\n}\ndependencies {\n  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n'
+              with open("android/app/build.gradle.kts", "w") as f:
+                  f.write(b)
+          elif os.path.exists("android/app/build.gradle"):
+              with open("android/app/build.gradle", "r") as f:
+                  b = f.read()
+              b += '\nandroid {\n  compileSdk 37\n  compileOptions {\n    coreLibraryDesugaringEnabled true\n  }\n}\ndependencies {\n  coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"\n}\n'
+              with open("android/app/build.gradle", "w") as f:
+                  f.write(b)
+          EOF
 
       - name: Get Dependencies
         run: flutter pub get
