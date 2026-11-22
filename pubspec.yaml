@@ -1,7 +1,7 @@
 name: iq_pharmacy39
 description: تطبيق دفعة 39 صيدلة اكلينيكي
 publish_to: 'none'
-version: 1.2.2+102
+version: 1.3.0+103
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -29,6 +29,8 @@ dependencies:
   flutter_local_notifications: ^18.0.1
   workmanager: any
   onesignal_flutter: ^5.2.0
+  flutter_blue_plus: ^1.35.0
+  flutter_ble_peripheral: ^1.2.6
 
 dev_dependencies:
   flutter_test:
