@@ -10,6 +10,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app_prefs.dart';
 
+typedef RadarStudentRecord = Map<String, String>;
+typedef BleChatMessage = Map<String, String>;
+
 class RadarCrypto {
   static const int _secretSeed = 3970241;
 
@@ -57,7 +60,6 @@ class BlePermissionsHelper {
   }
 }
 
-/// شاشة رادار الحضور للمندوب (مدة 5 دقائق افتراضياً أو اختيارية + كود متغير كل 30 ثانية)
 class AdminRadarScreen extends StatefulWidget {
   final String adminName;
   const AdminRadarScreen({super.key, required this.adminName});
@@ -71,7 +73,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
   final TextEditingController _sessionCtrl = TextEditingController();
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
 
-  int _selectedMinutes = 5; // الافتراضي 5 دقائق مع إمكانية الاختيار
+  int _selectedMinutes = 5;
   bool _isRadarActive = false;
   int _remainingSeconds = 300;
   String _activePin = '----';
@@ -80,7 +82,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
 
   Timer? _mainTimer;
   StreamSubscription<List<ScanResult>>? _scanSub;
-  final Map<String, Map<String, String>> _capturedStudents = {};
+  final Map<String, RadarStudentRecord> _capturedStudents = {};
   bool _isUploading = false;
 
   @override
@@ -100,12 +102,10 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
     }
 
     final ok = await BlePermissionsHelper.ensurePermissions();
-    if (!ok && !kIsWeb) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('يرجى تفعيل البلوتوث والموقع لعمل الرادار'), backgroundColor: Colors.orange),
-        );
-      }
+    if (!ok && !kIsWeb && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يرجى تفعيل البلوتوث والموقع لعمل الرادار'), backgroundColor: Colors.orange),
+      );
     }
 
     setState(() {
@@ -115,7 +115,6 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
       _pinSecondsLeft = RadarCrypto.secondsRemainingInSlot();
     });
 
-    // بدء البث واستقبال إشارات الطلاب عبر البلوتوث
     try {
       final advData = AdvertiseData(
         includeDeviceName: false,
@@ -154,7 +153,6 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
       });
     } catch (_) {}
 
-    // مؤقت تحديث الكود كل 30 ثانية ومؤقت إيقاف الرادار
     _mainTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       final newPin = RadarCrypto.currentPin(session);
@@ -417,7 +415,6 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
   }
 }
 
-/// نافذة الطالب للتحضير الفوري عبر رادار البلوتوث أو الكود الرباعي المتغير كل 30 ثانية
 class StudentFastAttendanceSheet extends StatefulWidget {
   final String studentId;
   final String studentName;
@@ -632,7 +629,6 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   }
 }
 
-/// شاشة دردشة الدفعة عبر البلوتوث (أوفلاين داخل القاعة)
 class OfflineBluetoothChatScreen extends StatefulWidget {
   final String studentId;
   final String nickname;
@@ -646,7 +642,7 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
   static const int _chatManufacturerId = 0x3940;
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
   final TextEditingController _msgCtrl = TextEditingController();
-  final List> _bleMessages = [];
+  final List<BleChatMessage> _bleMessages = [];
   final Set<String> _seenPacketIds = {};
   StreamSubscription<List<ScanResult>>? _scanSub;
   bool _isScanning = false;
