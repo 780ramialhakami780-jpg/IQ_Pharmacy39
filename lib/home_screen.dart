@@ -20,6 +20,7 @@ import 'gpa_screen.dart';
 import 'directory_screen.dart';
 import 'startup_manager.dart';
 import 'notification_service.dart';
+import 'attendance_radar.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -117,11 +118,24 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  Future<void> _syncOfflineAttendance(SharedPreferences prefs) async {
+    final pending = prefs.getStringList('pending_offline_attendance') ?? [];
+    if (pending.isEmpty) return;
+    try {
+      final rows = pending.map((e) => jsonDecode(e) as Map<String, dynamic>).toList();
+      await Supabase.instance.client.from('attendance').insert(rows);
+      await prefs.remove('pending_offline_attendance');
+    } catch (_) {}
+  }
+
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     setState(() => _isSyncing = true);
 
     try {
+      final prefs = await SharedPreferences.getInstance();
+      await _syncOfflineAttendance(prefs);
+
       final client = Supabase.instance.client;
       final subjectsData = await client.from('subjects').select().order('sort_order');
       final scheduleData = await client.from('schedule').select().order('id');
@@ -173,7 +187,6 @@ class _HomeScreenState extends State<HomeScreen> {
         } catch (_) {}
       }
 
-      final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_admin', cloudAdmin);
       await prefs.setString('university_email', cloudEmail);
       await prefs.setString('cache_urgent_banner', bannerText);
@@ -400,6 +413,7 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(
               children: [
+                _topActionBtn(Icons.radar_rounded, AppPrefs.tr('تحضير فوري', 'Fast Check-in'), () => _openFastRadarAttendance(), cardBg, accent),
                 _topActionBtn(Icons.support_agent_rounded, AppPrefs.tr('الدعم والتواصل', 'Support'), () => _openSupportContactsSheet(), cardBg, accent),
                 _topActionBtn(Icons.qr_code_2_rounded, AppPrefs.tr('كودي (QR)', 'My QR'), () => _showMyStudentQR(), cardBg, accent),
                 _topActionBtn(Icons.calculate_rounded, AppPrefs.tr('حاسبة المعدل', 'GPA Calc'), () {
@@ -591,6 +605,20 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             }),
         ],
+      ),
+    );
+  }
+
+  void _openFastRadarAttendance() {
+    final cardBg = Theme.of(context).cardColor;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: cardBg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      builder: (_) => StudentFastAttendanceSheet(
+        studentId: _studentId,
+        studentName: _studentName,
       ),
     );
   }
@@ -969,7 +997,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(AppPrefs.tr('سجل الحضور الشخصي (QR)', 'My Attendance Log (QR)'), style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: accent)),
+                Text(AppPrefs.tr('سجل الحضور الشخصي', 'My Attendance Log'), style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: accent)),
                 Chip(label: Text(AppPrefs.tr('الإجمالي: ${_myAttendance.length}', 'Total: ${_myAttendance.length}'))),
               ],
             ),
@@ -980,8 +1008,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Center(
                   child: Text(
                     AppPrefs.tr(
-                      'لم يتم تسجيل أي حضور لك بعد. اعرض كود QR الخاص بك للمندوب في المحاضرة.',
-                      'No attendance recorded yet. Show your QR code to the admin in class.',
+                      'لم يتم تسجيل أي حضور لك بعد. استخدم التحضير الفوري بالرادار أو اعرض كود QR للمندوب.',
+                      'No attendance recorded yet.',
                     ),
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.grey),
@@ -1290,7 +1318,11 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => BatchChatScreen(studentId: _studentId, defaultName: _studentName),
+        builder: (_) => BatchChatScreen(
+          studentId: _studentId,
+          defaultName: _studentName,
+          isAdmin: _isAdmin,
+        ),
       ),
     );
   }
@@ -2132,10 +2164,17 @@ class AppGlobalSearchDelegate extends SearchDelegate {
   }
 }
 
+/// دردشة الدفعة الشبيهة بالواتساب (ردود مقتبسة، تفاعلات، حذف، وقت الرسالة، وزر البلوتوث الأوفلاين)
 class BatchChatScreen extends StatefulWidget {
   final String studentId;
   final String defaultName;
-  const BatchChatScreen({super.key, required this.studentId, required this.defaultName});
+  final bool isAdmin;
+  const BatchChatScreen({
+    super.key,
+    required this.studentId,
+    required this.defaultName,
+    this.isAdmin = false,
+  });
 
   @override
   State<BatchChatScreen> createState() => _BatchChatScreenState();
@@ -2143,14 +2182,23 @@ class BatchChatScreen extends StatefulWidget {
 
 class _BatchChatScreenState extends State<BatchChatScreen> {
   final TextEditingController _msgCtrl = TextEditingController();
+  final ScrollController _scrollCtrl = ScrollController();
   late String _nickname;
   bool _isChatMuted = false;
+  Map<String, dynamic>? _replyingTo;
 
   @override
   void initState() {
     super.initState();
     _nickname = widget.defaultName.split(' ').take(2).join(' ');
     _loadMuteState();
+  }
+
+  @override
+  void dispose() {
+    _msgCtrl.dispose();
+    _scrollCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadMuteState() async {
@@ -2180,6 +2228,102 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     );
   }
 
+  String _formatMsgTime(dynamic rawDate) {
+    if (rawDate == null) return '';
+    try {
+      final dt = DateTime.parse(rawDate.toString()).toLocal();
+      final hour = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
+      final min = dt.minute.toString().padLeft(2, '0');
+      final period = dt.hour >= 12 ? 'م' : 'ص';
+      return '$hour:$min $period';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<void> _toggleReaction(Map<String, dynamic> msg, String emoji) async {
+    try {
+      final Map<String, dynamic> current = Map<String, dynamic>.from(msg['reactions'] ?? {});
+      final List<dynamic> users = List<dynamic>.from(current[emoji] ?? []);
+      if (users.contains(widget.studentId)) {
+        users.remove(widget.studentId);
+      } else {
+        users.add(widget.studentId);
+      }
+      if (users.isEmpty) {
+        current.remove(emoji);
+      } else {
+        current[emoji] = users;
+      }
+      await Supabase.instance.client
+          .from('chat_messages')
+          .update({'reactions': current})
+          .eq('id', msg['id']);
+    } catch (_) {}
+  }
+
+  Future<void> _deleteMessage(dynamic msgId) async {
+    try {
+      await Supabase.instance.client.from('chat_messages').delete().eq('id', msgId);
+    } catch (_) {}
+  }
+
+  void _showMessageOptions(Map<String, dynamic> msg, bool isMe) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: ['👍', '❤️', '😂', '🙏', '🔥'].map((em) {
+                return InkWell(
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _toggleReaction(msg, em);
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Text(em, style: const TextStyle(fontSize: 28)),
+                  ),
+                );
+              }).toList(),
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.reply_rounded, color: Colors.teal),
+              title: Text(AppPrefs.tr('رد على الرسالة', 'Reply')),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() => _replyingTo = msg);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_rounded),
+              title: Text(AppPrefs.tr('نسخ النص', 'Copy Text')),
+              onTap: () {
+                Clipboard.setData(ClipboardData(text: (msg['message'] ?? '').toString()));
+                Navigator.pop(ctx);
+              },
+            ),
+            if (isMe || widget.isAdmin)
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                title: Text(AppPrefs.tr('حذف الرسالة', 'Delete Message'), style: const TextStyle(color: Colors.redAccent)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _deleteMessage(msg['id']);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _sendMessage() async {
     final text = _msgCtrl.text.trim();
     if (text.isEmpty) return;
@@ -2189,12 +2333,33 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
       );
       return;
     }
+
+    final replySnapshot = _replyingTo;
     _msgCtrl.clear();
-    await Supabase.instance.client.from('chat_messages').insert({
+    setState(() => _replyingTo = null);
+
+    final payload = <String, dynamic>{
       'student_id': widget.studentId,
       'nickname': _nickname,
       'message': text,
-    });
+    };
+
+    if (replySnapshot != null) {
+      payload['reply_to_id'] = replySnapshot['id'];
+      payload['reply_to_name'] = replySnapshot['nickname'];
+      payload['reply_to_text'] = replySnapshot['message'];
+    }
+
+    try {
+      await Supabase.instance.client.from('chat_messages').insert(payload);
+    } catch (_) {
+      // في حال عدم تشغيل كود SQL الإضافي بعد، أرسل الرسالة الأساسية
+      await Supabase.instance.client.from('chat_messages').insert({
+        'student_id': widget.studentId,
+        'nickname': _nickname,
+        'message': text,
+      });
+    }
   }
 
   @override
@@ -2210,8 +2375,32 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(AppPrefs.tr('دردشة الدفعة', 'Batch Chat')),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(AppPrefs.tr('دردشة الدفعة', 'Batch Chat'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(
+              AppPrefs.tr('اضغط مطولاً على أي رسالة للرد أو التفاعل', 'Long-press any message to reply or react'),
+              style: const TextStyle(fontSize: 11, color: Colors.grey),
+            ),
+          ],
+        ),
         actions: [
+          IconButton(
+            tooltip: AppPrefs.tr('وضع البلوتوث (بدون إنترنت داخل القاعة)', 'Offline Bluetooth Chat'),
+            icon: Icon(Icons.bluetooth_audio_rounded, color: accent),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => OfflineBluetoothChatScreen(
+                    studentId: widget.studentId,
+                    nickname: _nickname,
+                  ),
+                ),
+              );
+            },
+          ),
           IconButton(
             tooltip: _isChatMuted
                 ? AppPrefs.tr('إلغاء كتم إشعارات الدردشة', 'Unmute Chat')
@@ -2222,28 +2411,43 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
             ),
             onPressed: _toggleChatMute,
           ),
-          TextButton(
-            onPressed: () {
-              final ctrl = TextEditingController(text: _nickname);
-              showDialog(
-                context: context,
-                builder: (_) => AlertDialog(
-                  title: Text(AppPrefs.tr('تغيير الاسم في الدردشة', 'Change Nickname')),
-                  content: TextField(controller: ctrl),
-                  actions: [
-                    ElevatedButton(
-                      onPressed: () {
-                        if (ctrl.text.trim().isNotEmpty) setState(() => _nickname = ctrl.text.trim());
-                        Navigator.pop(context);
-                      },
-                      child: Text(AppPrefs.tr('حفظ', 'Save')),
-                    )
-                  ],
-                ),
-              );
+          PopupMenuButton<String>(
+            onSelected: (val) {
+              if (val == 'name') {
+                final ctrl = TextEditingController(text: _nickname);
+                showDialog(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: Text(AppPrefs.tr('تغيير الاسم في الدردشة', 'Change Nickname')),
+                    content: TextField(controller: ctrl),
+                    actions: [
+                      ElevatedButton(
+                        onPressed: () {
+                          if (ctrl.text.trim().isNotEmpty) setState(() => _nickname = ctrl.text.trim());
+                          Navigator.pop(context);
+                        },
+                        child: Text(AppPrefs.tr('حفظ', 'Save')),
+                      )
+                    ],
+                  ),
+                );
+              } else if (val == 'ble') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => OfflineBluetoothChatScreen(
+                      studentId: widget.studentId,
+                      nickname: _nickname,
+                    ),
+                  ),
+                );
+              }
             },
-            child: Text(AppPrefs.tr('تغيير الاسم', 'Edit Name'), style: TextStyle(color: accent)),
-          )
+            itemBuilder: (_) => [
+              PopupMenuItem(value: 'ble', child: Text(AppPrefs.tr('📡 دردشة البلوتوث (بدون نت)', '📡 Offline Bluetooth Chat'))),
+              PopupMenuItem(value: 'name', child: Text(AppPrefs.tr('✏️ تغيير الاسم المستعار', '✏️ Edit Nickname'))),
+            ],
+          ),
         ],
       ),
       body: Column(
@@ -2255,29 +2459,114 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
                 if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
                 final msgs = snapshot.data!;
                 return ListView.builder(
-                  padding: const EdgeInsets.all(12),
+                  controller: _scrollCtrl,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   itemCount: msgs.length,
                   itemBuilder: (_, i) {
-                    final m = msgs[i];
+                    final m = Map<String, dynamic>.from(msgs[i]);
                     final isMe = m['student_id'] == widget.studentId;
-                    return Align(
-                      alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: isMe
-                              ? (isDark ? const Color(0xFF1E3A5F) : const Color(0xFFCCFBF1))
-                              : cardBg,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(m['nickname'] ?? '', style: TextStyle(fontSize: 11, color: accent, fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 4),
-                            Text(m['message'] ?? ''),
-                          ],
+                    final replyName = (m['reply_to_name'] ?? '').toString();
+                    final replyText = (m['reply_to_text'] ?? '').toString();
+                    final Map<String, dynamic> reactions = Map<String, dynamic>.from(m['reactions'] ?? {});
+
+                    final bubbleColor = isMe
+                        ? (isDark ? const Color(0xFF005C4B) : const Color(0xFFD9FDD3))
+                        : cardBg;
+
+                    return GestureDetector(
+                      onLongPress: () => _showMessageOptions(m, isMe),
+                      onHorizontalDragEnd: (_) => setState(() => _replyingTo = m),
+                      child: Align(
+                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+                          decoration: BoxDecoration(
+                            color: bubbleColor,
+                            borderRadius: BorderRadius.only(
+                              topLeft: const Radius.circular(16),
+                              topRight: const Radius.circular(16),
+                              bottomLeft: Radius.circular(isMe ? 16 : 4),
+                              bottomRight: Radius.circular(isMe ? 4 : 16),
+                            ),
+                            boxShadow: [
+                              BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 3, offset: const Offset(0, 1)),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (!isMe)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 3),
+                                  child: Text(
+                                    m['nickname'] ?? '',
+                                    style: TextStyle(fontSize: 11.5, color: accent, fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                              if (replyText.isNotEmpty)
+                                Container(
+                                  margin: const EdgeInsets.only(bottom: 6),
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withOpacity(isDark ? 0.25 : 0.06),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border(right: BorderSide(color: accent, width: 3)),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(replyName, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: accent)),
+                                      Text(replyText, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
+                                    ],
+                                  ),
+                                ),
+                              Text(
+                                m['message'] ?? '',
+                                style: TextStyle(
+                                  fontSize: 14.5,
+                                  height: 1.35,
+                                  color: isMe && !isDark ? Colors.black87 : null,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _formatMsgTime(m['created_at']),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: isMe && !isDark ? Colors.black54 : Colors.grey,
+                                    ),
+                                  ),
+                                  if (isMe) ...[
+                                    const SizedBox(width: 4),
+                                    Icon(Icons.done_all_rounded, size: 14, color: isDark ? Colors.lightBlueAccent : Colors.blue),
+                                  ],
+                                ],
+                              ),
+                              if (reactions.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Wrap(
+                                    spacing: 4,
+                                    children: reactions.entries.map((e) {
+                                      final count = (e.value as List).length;
+                                      return Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black.withOpacity(0.18),
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        child: Text('${e.key} $count', style: const TextStyle(fontSize: 11)),
+                                      );
+                                    }).toList(),
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                     );
@@ -2286,23 +2575,67 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
               },
             ),
           ),
+          if (_replyingTo != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              color: cardBg,
+              child: Row(
+                children: [
+                  Container(width: 4, height: 34, color: accent),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${AppPrefs.tr('الرد على', 'Replying to')} ${_replyingTo!['nickname']}',
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: accent),
+                        ),
+                        Text(
+                          (_replyingTo!['message'] ?? '').toString(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, size: 18),
+                    onPressed: () => setState(() => _replyingTo = null),
+                  ),
+                ],
+              ),
+            ),
           Container(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             color: cardBg,
             child: Row(
               children: [
                 Expanded(
-                  child: TextField(
-                    controller: _msgCtrl,
-                    decoration: InputDecoration(
-                      hintText: AppPrefs.tr('اكتب رسالة... (الروابط غير مسموحة)', 'Type a message... (no links)'),
-                      border: InputBorder.none,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    decoration: BoxDecoration(
+                      color: isDark ? Colors.white10 : Colors.black.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: TextField(
+                      controller: _msgCtrl,
+                      decoration: InputDecoration(
+                        hintText: AppPrefs.tr('اكتب رسالة...', 'Type a message...'),
+                        border: InputBorder.none,
+                      ),
+                      onSubmitted: (_) => _sendMessage(),
                     ),
                   ),
                 ),
-                IconButton(
-                  icon: Icon(Icons.send_rounded, color: accent),
-                  onPressed: _sendMessage,
+                const SizedBox(width: 6),
+                CircleAvatar(
+                  backgroundColor: accent,
+                  child: IconButton(
+                    icon: const Icon(Icons.send_rounded, color: Colors.black, size: 20),
+                    onPressed: _sendMessage,
+                  ),
                 ),
               ],
             ),
