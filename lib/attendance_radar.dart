@@ -45,18 +45,41 @@ class RadarCrypto {
   }
 }
 
-class BlePermissionsHelper {
-  static Future<bool> ensurePermissions() async {
+class BleSafeHelper {
+  static Future<bool> prepareBluetooth() async {
     if (kIsWeb) return false;
-    final statuses = await [
-      Permission.bluetoothScan,
-      Permission.bluetoothAdvertise,
-      Permission.bluetoothConnect,
-      Permission.locationWhenInUse,
-    ].request();
-    return statuses[Permission.bluetoothScan]?.isGranted == true ||
-        statuses[Permission.bluetooth]?.isGranted == true ||
-        statuses[Permission.locationWhenInUse]?.isGranted == true;
+    try {
+      final statuses = await [
+        Permission.bluetoothScan,
+        Permission.bluetoothAdvertise,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+
+      final hasPerm = statuses[Permission.bluetoothScan]?.isGranted == true ||
+          statuses[Permission.bluetooth]?.isGranted == true ||
+          statuses[Permission.locationWhenInUse]?.isGranted == true;
+      if (!hasPerm) return false;
+
+      final state = await FlutterBluePlus.adapterState.first
+          .timeout(const Duration(seconds: 2), onTimeout: () => BluetoothAdapterState.unknown);
+      return state == BluetoothAdapterState.on;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Uint8List safeAsciiBytes(String text, {int maxBytes = 20}) {
+    final clean = text.replaceAll(RegExp(r'[^\x20-\x7E]'), '');
+    final bytes = utf8.encode(clean);
+    if (bytes.length <= maxBytes) return Uint8List.fromList(bytes);
+    return Uint8List.fromList(bytes.sublist(0, maxBytes));
+  }
+
+  static Uint8List safeUtf8Bytes(String text, {int maxBytes = 22}) {
+    final bytes = utf8.encode(text);
+    if (bytes.length <= maxBytes) return Uint8List.fromList(bytes);
+    return Uint8List.fromList(bytes.sublist(0, maxBytes));
   }
 }
 
@@ -70,9 +93,11 @@ class AdminRadarScreen extends StatefulWidget {
 
 class _AdminRadarScreenState extends State<AdminRadarScreen> {
   static const int _attManufacturerId = 0x3939;
-  final TextEditingController _sessionCtrl = TextEditingController();
+  final TextEditingController _subjectCtrl = TextEditingController();
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
 
+  String _lectureType = 'نظري';
+  String _selectedGroup = 'مجموعة 1';
   int _selectedMinutes = 5;
   bool _isRadarActive = false;
   int _remainingSeconds = 300;
@@ -83,28 +108,70 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
   Timer? _mainTimer;
   StreamSubscription<List<ScanResult>>? _scanSub;
   final Map<String, RadarStudentRecord> _capturedStudents = {};
+  Map<String, String> _studentsDirectory = {};
   bool _isUploading = false;
+
+  String get _fullSessionLabel {
+    final base = _subjectCtrl.text.trim();
+    if (base.isEmpty) return '';
+    if (_lectureType == 'عملي') {
+      return '$base - عملي ($_selectedGroup)';
+    }
+    return '$base - نظري';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStudentsDirectory();
+  }
 
   @override
   void dispose() {
     _stopRadar(silent: true);
-    _sessionCtrl.dispose();
+    _subjectCtrl.dispose();
     super.dispose();
   }
 
+  Future<void> _loadStudentsDirectory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString('cache_students_dir');
+    if (cached != null && cached.isNotEmpty) {
+      try {
+        _studentsDirectory = Map<String, String>.from(jsonDecode(cached));
+      } catch (_) {}
+    }
+    try {
+      final rows = await Supabase.instance.client.from('students').select('student_id, full_name');
+      final Map<String, String> fresh = {};
+      for (final r in rows) {
+        final id = (r['student_id'] ?? '').toString().trim();
+        final name = (r['full_name'] ?? '').toString().trim();
+        if (id.isNotEmpty && name.isNotEmpty) fresh[id] = name;
+      }
+      if (fresh.isNotEmpty) {
+        _studentsDirectory = fresh;
+        await prefs.setString('cache_students_dir', jsonEncode(fresh));
+      }
+    } catch (_) {}
+  }
+
   Future<void> _startRadar() async {
-    final session = _sessionCtrl.text.trim();
+    final session = _fullSessionLabel;
     if (session.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('يرجى كتابة اسم المادة أو كود الجلسة أولاً'), backgroundColor: Colors.redAccent),
+        const SnackBar(content: Text('يرجى كتابة اسم المادة أولاً'), backgroundColor: Colors.redAccent),
       );
       return;
     }
 
-    final ok = await BlePermissionsHelper.ensurePermissions();
-    if (!ok && !kIsWeb && mounted) {
+    final btReady = await BleSafeHelper.prepareBluetooth();
+    if (!btReady && !kIsWeb && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('يرجى تفعيل البلوتوث والموقع لعمل الرادار'), backgroundColor: Colors.orange),
+        const SnackBar(
+          content: Text('زر البلوتوث مغلق في هاتفك: تم تشغيل الكود الرباعي، وشغّل البلوتوث للالتقاط التلقائي.'),
+          backgroundColor: Colors.orange,
+        ),
       );
     }
 
@@ -115,33 +182,35 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
       _pinSecondsLeft = RadarCrypto.secondsRemainingInSlot();
     });
 
-    try {
-      final advData = AdvertiseData(
-        includeDeviceName: false,
-        manufacturerId: _attManufacturerId,
-        manufacturerData: Uint8List.fromList(utf8.encode('ADMIN|$session')),
-      );
-      await _peripheral.start(advertiseData: advData);
-      if (mounted) setState(() => _bleAdvertising = true);
-    } catch (_) {}
+    if (btReady) {
+      try {
+        final supported = await _peripheral.isSupported;
+        if (supported) {
+          final advData = AdvertiseData(
+            includeDeviceName: false,
+            manufacturerId: _attManufacturerId,
+            manufacturerData: BleSafeHelper.safeAsciiBytes('ADM|${session.hashCode.abs() % 99999}'),
+          );
+          await _peripheral.start(advertiseData: advData);
+          if (mounted) setState(() => _bleAdvertising = true);
+        }
+      } catch (_) {}
 
-    try {
-      await FlutterBluePlus.startScan(continuousUpdates: true);
-      _scanSub = FlutterBluePlus.scanResults.listen((results) {
-        for (final r in results) {
-          final rawBytes = r.advertisementData.manufacturerData[_attManufacturerId];
-          if (rawBytes != null) {
-            final payload = utf8.decode(rawBytes, allowMalformed: true);
-            if (payload.startsWith('STU|')) {
-              final parts = payload.split('|');
-              if (parts.length >= 3) {
-                final sid = parts[1].trim();
-                final sname = parts[2].trim();
-                if (sid.isNotEmpty && !_capturedStudents.containsKey(sid)) {
+      try {
+        await FlutterBluePlus.startScan(continuousUpdates: true);
+        _scanSub = FlutterBluePlus.scanResults.listen((results) {
+          for (final r in results) {
+            final rawBytes = r.advertisementData.manufacturerData[_attManufacturerId];
+            if (rawBytes != null) {
+              final payload = utf8.decode(rawBytes, allowMalformed: true);
+              if (payload.startsWith('S|')) {
+                final sid = payload.substring(2).trim();
+                if (sid.isNotEmpty && !_capturedStudents.containsKey(sid) && mounted) {
+                  final fullName = _studentsDirectory[sid] ?? 'طالب ($sid)';
                   setState(() {
                     _capturedStudents[sid] = {
                       'student_id': sid,
-                      'full_name': sname.isEmpty ? 'طالب ($sid)' : sname,
+                      'full_name': fullName,
                       'method': 'رادار بلوتوث 📡',
                     };
                   });
@@ -149,9 +218,9 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
               }
             }
           }
-        }
-      });
-    } catch (_) {}
+        });
+      } catch (_) {}
+    }
 
     _mainTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
@@ -195,7 +264,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
   Future<void> _syncCapturedToCloud() async {
     if (_capturedStudents.isEmpty || _isUploading) return;
     setState(() => _isUploading = true);
-    final session = _sessionCtrl.text.trim();
+    final session = _fullSessionLabel;
 
     try {
       final rows = _capturedStudents.values
@@ -211,7 +280,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
       setState(() => _isUploading = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('تم رفع واعتماد حضور (${rows.length}) طالب في قاعدة البيانات بنجاح ✓'),
+          content: Text('تم رفع واعتماد حضور (${rows.length}) طالب في ($session) بنجاح ✓'),
           backgroundColor: Colors.green,
         ),
       );
@@ -240,7 +309,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('رادار التحضير الفائق (بلوتوث + كود)'),
+        title: const Text('رادار التحضير الفائق (نظري / عملي)'),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -253,16 +322,69 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('إعداد جلسة التحضير داخل القاعة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  const Text('إعداد جلسة التحضير داخل القاعة أو المعمل', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                   const SizedBox(height: 10),
                   TextField(
-                    controller: _sessionCtrl,
+                    controller: _subjectCtrl,
                     enabled: !_isRadarActive,
+                    onChanged: (_) => setState(() {}),
                     decoration: const InputDecoration(
-                      labelText: 'اسم المادة أو كود المحاضرة (مثلاً: Pharmacology L3)',
+                      labelText: 'اسم المادة (مثلاً: Pharmacology)',
                       border: OutlineInputBorder(),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  const Text('نوع المحاضرة:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Center(child: Text('محاضرة نظري (الدفعة)')),
+                          selected: _lectureType == 'نظري',
+                          onSelected: _isRadarActive ? null : (_) => setState(() => _lectureType = 'نظري'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ChoiceChip(
+                          label: const Center(child: Text('معمل عملي (مجموعات)')),
+                          selected: _lectureType == 'عملي',
+                          onSelected: _isRadarActive ? null : (_) => setState(() => _lectureType = 'عملي'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (_lectureType == 'عملي') ...[
+                    const SizedBox(height: 12),
+                    const Text('تحديد مجموعة العملي:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 8,
+                      children: ['مجموعة 1', 'مجموعة 2', 'مجموعة 3', 'مجموعة 4', 'مجموعة 5'].map((grp) {
+                        return ChoiceChip(
+                          label: Text(grp),
+                          selected: _selectedGroup == grp,
+                          onSelected: _isRadarActive ? null : (_) => setState(() => _selectedGroup = grp),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                  if (_fullSessionLabel.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: accent.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        'عنوان الكشف المعتمد: $_fullSessionLabel',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: accent),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   const Text('مدة عمل الرادار:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
@@ -377,7 +499,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('الطلاب الملتقطون بالرادار (${_capturedStudents.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              Text('الطلاب الملتقطون (${_capturedStudents.length})', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                 icon: _isUploading
@@ -394,7 +516,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
               padding: EdgeInsets.all(24),
               child: Center(
                 child: Text(
-                  'بمجرد تشغيل الرادار، سيظهر هنا الطلاب الموجودون في القاعة تلقائياً.',
+                  'بمجرد تشغيل الرادار، سيظهر هنا الطلاب الموجودون في القاعة أو المعمل تلقائياً.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey),
                 ),
@@ -427,13 +549,24 @@ class StudentFastAttendanceSheet extends StatefulWidget {
 class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet> {
   static const int _attManufacturerId = 0x3939;
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
-  final TextEditingController _sessionCtrl = TextEditingController();
+  final TextEditingController _subjectCtrl = TextEditingController();
   final TextEditingController _pinCtrl = TextEditingController();
 
+  String _lectureType = 'نظري';
+  String _selectedGroup = 'مجموعة 1';
   bool _broadcasting = false;
-  String _detectedSession = '';
+  bool _radarNearby = false;
   bool _submitting = false;
   StreamSubscription<List<ScanResult>>? _scanSub;
+
+  String get _computedSessionLabel {
+    final base = _subjectCtrl.text.trim();
+    if (base.isEmpty) return '';
+    if (_lectureType == 'عملي') {
+      return '$base - عملي ($_selectedGroup)';
+    }
+    return '$base - نظري';
+  }
 
   @override
   void initState() {
@@ -450,24 +583,26 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
     try {
       _peripheral.stop();
     } catch (_) {}
-    _sessionCtrl.dispose();
+    _subjectCtrl.dispose();
     _pinCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _startAutoBluetoothPresence() async {
-    final ok = await BlePermissionsHelper.ensurePermissions();
-    if (!ok) return;
+    final btReady = await BleSafeHelper.prepareBluetooth();
+    if (!btReady || !mounted) return;
 
     try {
-      final shortName = widget.studentName.split(' ').take(2).join(' ');
-      final advData = AdvertiseData(
-        includeDeviceName: false,
-        manufacturerId: _attManufacturerId,
-        manufacturerData: Uint8List.fromList(utf8.encode('STU|${widget.studentId}|$shortName')),
-      );
-      await _peripheral.start(advertiseData: advData);
-      if (mounted) setState(() => _broadcasting = true);
+      final supported = await _peripheral.isSupported;
+      if (supported) {
+        final advData = AdvertiseData(
+          includeDeviceName: false,
+          manufacturerId: _attManufacturerId,
+          manufacturerData: BleSafeHelper.safeAsciiBytes('S|${widget.studentId}'),
+        );
+        await _peripheral.start(advertiseData: advData);
+        if (mounted) setState(() => _broadcasting = true);
+      }
     } catch (_) {}
 
     try {
@@ -477,14 +612,8 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
           final raw = r.advertisementData.manufacturerData[_attManufacturerId];
           if (raw != null) {
             final text = utf8.decode(raw, allowMalformed: true);
-            if (text.startsWith('ADMIN|')) {
-              final sess = text.substring(6).trim();
-              if (sess.isNotEmpty && mounted) {
-                setState(() {
-                  _detectedSession = sess;
-                  if (_sessionCtrl.text.isEmpty) _sessionCtrl.text = sess;
-                });
-              }
+            if (text.startsWith('ADM|') && mounted) {
+              setState(() => _radarNearby = true);
             }
           }
         }
@@ -493,19 +622,19 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   }
 
   Future<void> _submitPinAttendance() async {
-    final session = _sessionCtrl.text.trim();
+    final session = _computedSessionLabel;
     final pin = _pinCtrl.text.trim();
 
     if (session.isEmpty || pin.length != 4) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppPrefs.tr('أدخل اسم الجلسة والكود المكون من 4 أرقام', 'Enter session & 4-digit PIN')), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text(AppPrefs.tr('أدخل اسم المادة والكود المكون من 4 أرقام', 'Enter subject & 4-digit PIN')), backgroundColor: Colors.redAccent),
       );
       return;
     }
 
     if (!RadarCrypto.verifyPin(session, pin)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppPrefs.tr('الكود غير صحيح أو انتهت مدته (30 ثانية)', 'Invalid or expired PIN')), backgroundColor: Colors.redAccent),
+        SnackBar(content: Text(AppPrefs.tr('الكود غير صحيح أو انتهت مدته (تأكد من نوع المحاضرة والمجموعة)', 'Invalid or expired PIN')), backgroundColor: Colors.redAccent),
       );
       return;
     }
@@ -520,7 +649,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
       if (!mounted) return;
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppPrefs.tr('تم تسجيل حضورك بنجاح ✓', 'Attendance recorded ✓')), backgroundColor: Colors.green),
+        SnackBar(content: Text(AppPrefs.tr('تم تسجيل حضورك في ($session) بنجاح ✓', 'Attendance recorded ✓')), backgroundColor: Colors.green),
       );
     } catch (_) {
       final prefs = await SharedPreferences.getInstance();
@@ -548,82 +677,117 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
 
     return Padding(
       padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(context).viewInsets.bottom + 20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.radar_rounded, color: accent, size: 28),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  AppPrefs.tr('التحضير السريع داخل القاعة', 'Fast In-Class Attendance'),
-                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: _broadcasting ? Colors.teal.withOpacity(0.15) : Colors.orange.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: _broadcasting ? Colors.teal : Colors.orange),
-            ),
-            child: Row(
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
               children: [
-                Icon(_broadcasting ? Icons.bluetooth_connected_rounded : Icons.bluetooth_disabled_rounded,
-                    color: _broadcasting ? Colors.teal : Colors.orange),
+                Icon(Icons.radar_rounded, color: accent, size: 28),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    _detectedSession.isNotEmpty
-                        ? 'تم التقاط رادار القاعة: $_detectedSession (أنت ظاهر لدى المندوب الآن ✓)'
-                        : (_broadcasting
-                            ? 'إشارتك نشطة الآن بالبلوتوث، سيظهر اسمك في رادار المندوب تلقائياً.'
-                            : 'فعّل البلوتوث للالتقاط التلقائي، أو أدخل الكود الرباعي بالأسفل.'),
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                    AppPrefs.tr('التحضير السريع داخل القاعة أو المعمل', 'Fast In-Class Attendance'),
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 14),
-          TextField(
-            controller: _sessionCtrl,
-            decoration: InputDecoration(
-              labelText: AppPrefs.tr('اسم المادة / الجلسة (كما كتبها المندوب)', 'Session / Subject Code'),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _broadcasting ? Colors.teal.withOpacity(0.15) : Colors.orange.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _broadcasting ? Colors.teal : Colors.orange),
+              ),
+              child: Row(
+                children: [
+                  Icon(_broadcasting ? Icons.bluetooth_connected_rounded : Icons.bluetooth_disabled_rounded,
+                      color: _broadcasting ? Colors.teal : Colors.orange),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _radarNearby
+                          ? 'تم التقاط رادار المندوب داخل القاعة ✓ (أنت ظاهر في القائمة الآن)'
+                          : (_broadcasting
+                              ? 'إشارتك نشطة الآن بالبلوتوث، سيظهر اسمك في رادار المندوب تلقائياً.'
+                              : 'شغّل زر البلوتوث في هاتفك للالتقاط التلقائي، أو أدخل الكود الرباعي بالأسفل.'),
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _pinCtrl,
-            keyboardType: TextInputType.number,
-            maxLength: 4,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 10),
-            decoration: InputDecoration(
-              hintText: '••••',
-              labelText: AppPrefs.tr('الكود المتغيّر (4 أرقام)', '4-Digit Rolling PIN'),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _subjectCtrl,
+              decoration: InputDecoration(
+                labelText: AppPrefs.tr('اسم المادة (كما كتبها المندوب)', 'Subject Name'),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            height: 48,
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
-              icon: _submitting
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.check_circle_rounded),
-              label: Text(AppPrefs.tr('تأكيد الحضور بالكود', 'Confirm Attendance'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              onPressed: _submitting ? null : _submitPinAttendance,
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: ChoiceChip(
+                    label: const Center(child: Text('نظري')),
+                    selected: _lectureType == 'نظري',
+                    onSelected: (_) => setState(() => _lectureType = 'نظري'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ChoiceChip(
+                    label: const Center(child: Text('عملي')),
+                    selected: _lectureType == 'عملي',
+                    onSelected: (_) => setState(() => _lectureType = 'عملي'),
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
+            if (_lectureType == 'عملي') ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                children: ['مجموعة 1', 'مجموعة 2', 'مجموعة 3', 'مجموعة 4', 'مجموعة 5'].map((grp) {
+                  return ChoiceChip(
+                    label: Text(grp, style: const TextStyle(fontSize: 12)),
+                    selected: _selectedGroup == grp,
+                    onSelected: (_) => setState(() => _selectedGroup = grp),
+                  );
+                }).toList(),
+              ),
+            ],
+            const SizedBox(height: 10),
+            TextField(
+              controller: _pinCtrl,
+              keyboardType: TextInputType.number,
+              maxLength: 4,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 10),
+              decoration: InputDecoration(
+                hintText: '••••',
+                labelText: AppPrefs.tr('الكود المتغيّر (4 أرقام)', '4-Digit Rolling PIN'),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                icon: _submitting
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.check_circle_rounded),
+                label: Text(AppPrefs.tr('تأكيد الحضور بالكود', 'Confirm Attendance'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                onPressed: _submitting ? null : _submitPinAttendance,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -667,8 +831,8 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
   }
 
   Future<void> _initOfflineBleChat() async {
-    final ok = await BlePermissionsHelper.ensurePermissions();
-    if (!ok) return;
+    final btReady = await BleSafeHelper.prepareBluetooth();
+    if (!btReady || !mounted) return;
 
     try {
       await FlutterBluePlus.startScan(continuousUpdates: true);
@@ -683,18 +847,16 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
               final pktId = parts[0];
               final sender = parts[1];
               final body = parts.sublist(2).join('|');
-              if (!_seenPacketIds.contains(pktId)) {
+              if (!_seenPacketIds.contains(pktId) && mounted) {
                 _seenPacketIds.add(pktId);
-                if (mounted) {
-                  setState(() {
-                    _bleMessages.add({
-                      'sender': sender,
-                      'body': body,
-                      'isMe': 'false',
-                      'time': '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
-                    });
+                setState(() {
+                  _bleMessages.add({
+                    'sender': sender,
+                    'body': body,
+                    'isMe': 'false',
+                    'time': '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
                   });
-                }
+                });
               }
             }
           }
@@ -708,10 +870,9 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
     if (text.isEmpty) return;
     _msgCtrl.clear();
 
-    final pktId = (DateTime.now().millisecondsSinceEpoch % 99999).toString();
+    final pktId = (DateTime.now().millisecondsSinceEpoch % 9999).toString();
     final shortNick = widget.nickname.split(' ').first;
-    final compactText = text.length > 18 ? text.substring(0, 18) : text;
-    final packet = '$pktId|$shortNick|$compactText';
+    final packet = '$pktId|$shortNick|$text';
 
     _seenPacketIds.add(pktId);
     setState(() {
@@ -724,12 +885,14 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
     });
 
     try {
+      final supported = await _peripheral.isSupported;
+      if (!supported) return;
       await _peripheral.stop();
       await _peripheral.start(
         advertiseData: AdvertiseData(
           includeDeviceName: false,
           manufacturerId: _chatManufacturerId,
-          manufacturerData: Uint8List.fromList(utf8.encode(packet)),
+          manufacturerData: BleSafeHelper.safeUtf8Bytes(packet, maxBytes: 22),
         ),
       );
     } catch (_) {}
@@ -747,7 +910,7 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
           children: [
             const Text('دردشة القاعة بالبلوتوث (بدون إنترنت)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
             Text(
-              _isScanning ? 'متصل بالرادار المحيط 📡 (الرسائل القصيرة)' : 'تأكد من تشغيل البلوتوث والموقع',
+              _isScanning ? 'متصل بالرادار المحيط 📡' : 'شغّل زر البلوتوث في هاتفك للاتصال',
               style: TextStyle(fontSize: 11, color: _isScanning ? Colors.greenAccent : Colors.orange),
             ),
           ],
@@ -760,7 +923,7 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             color: Colors.teal.withOpacity(0.15),
             child: const Text(
-              '💡 هذا الوضع يعمل بدون إنترنت أو رصيد بين الطلاب الموجودين داخل نفس القاعة عبر موجات البلوتوث.',
+              '💡 يعمل هذا الوضع بدون إنترنت بين الطلاب داخل القاعة عبر موجات البلوتوث.',
               style: TextStyle(fontSize: 11, color: Colors.tealAccent),
             ),
           ),
@@ -811,10 +974,10 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
                 Expanded(
                   child: TextField(
                     controller: _msgCtrl,
-                    maxLength: 18,
+                    maxLength: 14,
                     decoration: const InputDecoration(
                       counterText: '',
-                      hintText: 'رسالة بلوتوث سريعة (حتى 18 حرف)...',
+                      hintText: 'رسالة قصيرة (حتى 14 حرف)...',
                       border: InputBorder.none,
                     ),
                     onSubmitted: (_) => _broadcastBleMessage(),
