@@ -24,6 +24,7 @@ class _AdminScreenState extends State<AdminScreen> {
   List<dynamic> _attendance = [];
   List<dynamic> _announcements = [];
   List<dynamic> _supportContacts = [];
+  List<dynamic> _subjectRefs = [];
   Map<String, String> _studentEmails = {};
   bool _isLoading = false;
 
@@ -44,6 +45,7 @@ class _AdminScreenState extends State<AdminScreen> {
       final att = await _client.from('attendance').select().order('created_at', ascending: false).limit(500);
       List<dynamic> anns = [];
       List<dynamic> supps = [];
+      List<dynamic> refs = [];
       final Map<String, String> emailMap = {};
 
       try {
@@ -52,6 +54,10 @@ class _AdminScreenState extends State<AdminScreen> {
 
       try {
         supps = await _client.from('support_contacts').select().order('sort_order');
+      } catch (_) {}
+
+      try {
+        refs = await _client.from('subject_references').select().order('created_at', ascending: false);
       } catch (_) {}
 
       try {
@@ -70,6 +76,7 @@ class _AdminScreenState extends State<AdminScreen> {
         _attendance = att;
         _announcements = anns;
         _supportContacts = supps;
+        _subjectRefs = refs;
         _studentEmails = emailMap;
       });
     } catch (_) {}
@@ -173,11 +180,11 @@ class _AdminScreenState extends State<AdminScreen> {
             isScrollable: true,
             indicatorColor: Color(0xFF4FD1C5),
             tabs: [
-              Tab(text: 'الإعلانات والتنبيهات'),
-              Tab(text: 'المواد والملفات'),
+              Tab(text: 'الإعلانات والتصويت'),
+              Tab(text: 'المواد والمرجع'),
               Tab(text: 'بنك الأسئلة'),
               Tab(text: 'الجدول وكشف الحضور'),
-              Tab(text: 'الدعم والأجهزة والدليل'),
+              Tab(text: 'الدعم والأجهزة والتحديث'),
             ],
           ),
         ),
@@ -201,6 +208,10 @@ class _AdminScreenState extends State<AdminScreen> {
     final annDescCtrl = TextEditingController();
     final annImgUrlCtrl = TextEditingController();
     final annActionUrlCtrl = TextEditingController();
+    final annPollOptionsCtrl = TextEditingController();
+
+    final occDateCtrl = TextEditingController();
+    final occTitleCtrl = TextEditingController();
 
     final urgentCtrl = TextEditingController();
     final notifTitle = TextEditingController();
@@ -214,20 +225,30 @@ class _AdminScreenState extends State<AdminScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('🖼️ نشر إعلان مصوّر في الشريط المتحرك (Carousel)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+        const Text('🖼️ نشر إعلان أو تصويت دفعة في الشريط العلوي', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
         const SizedBox(height: 6),
-        const Text('يظهر أعلى الواجهة الرئيسية مع إمكانية التكبير وزر "فتح الرابط" الاختياري.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const Text('يمكنك نشر إعلان مصوّر، أو طرح تصويت بخيارات متعددة ليصوّت الطلاب فور دخولهم التطبيق.', style: TextStyle(fontSize: 12, color: Colors.grey)),
         const SizedBox(height: 10),
-        TextField(controller: annTitleCtrl, decoration: const InputDecoration(labelText: 'عنوان الإعلان (إلزامي)', border: OutlineInputBorder())),
+        TextField(controller: annTitleCtrl, decoration: const InputDecoration(labelText: 'عنوان الإعلان أو سؤال التصويت (إلزامي)', border: OutlineInputBorder())),
         const SizedBox(height: 8),
-        TextField(controller: annDescCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'وصف تفصيلي يظهر عند تكبير الإعلان (اختياري)', border: OutlineInputBorder())),
+        TextField(
+          controller: annPollOptionsCtrl,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            labelText: 'خيارات التصويت (اختياري - اكتب كل خيار في سطر مستقل)',
+            hintText: 'مثال:\nتأجيل المحاضرة ليوم الثلاثاء\nإبقاء الموعد كما هو',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(controller: annDescCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'وصف تفصيلي (اختياري)', border: OutlineInputBorder())),
         const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
               child: TextField(
                 controller: annImgUrlCtrl,
-                decoration: const InputDecoration(labelText: 'رابط الصورة أو ارفعها من الاستوديو', border: OutlineInputBorder()),
+                decoration: const InputDecoration(labelText: 'رابط الصورة (اختياري للتصويت)', border: OutlineInputBorder()),
               ),
             ),
             const SizedBox(width: 8),
@@ -262,26 +283,39 @@ class _AdminScreenState extends State<AdminScreen> {
         const SizedBox(height: 10),
         ElevatedButton.icon(
           style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
-          icon: const Icon(Icons.add_photo_alternate_rounded),
-          label: const Text('نشر الإعلان في التطبيق', style: TextStyle(fontWeight: FontWeight.bold)),
+          icon: const Icon(Icons.publish_rounded),
+          label: const Text('نشر الإعلان / التصويت الآن', style: TextStyle(fontWeight: FontWeight.bold)),
           onPressed: () async {
-            if (annTitleCtrl.text.trim().isEmpty || annImgUrlCtrl.text.trim().isEmpty) {
-              _showMsg('يرجى إدخال عنوان الإعلان وصورته', isError: true);
+            final title = annTitleCtrl.text.trim();
+            final pollLines = annPollOptionsCtrl.text
+                .split('\n')
+                .map((e) => e.trim())
+                .where((e) => e.isNotEmpty)
+                .toList();
+
+            if (title.isEmpty) {
+              _showMsg('يرجى إدخال عنوان الإعلان أو سؤال التصويت', isError: true);
+              return;
+            }
+            if (pollLines.isEmpty && annImgUrlCtrl.text.trim().isEmpty) {
+              _showMsg('يرجى رفع صورة للإعلان أو إدخال خيارين للتصويت', isError: true);
               return;
             }
             setState(() => _isLoading = true);
             try {
               await _client.from('announcements').insert({
-                'title': annTitleCtrl.text.trim(),
+                'title': title,
                 'description': annDescCtrl.text.trim(),
                 'image_url': annImgUrlCtrl.text.trim(),
                 'action_url': annActionUrlCtrl.text.trim(),
+                'poll_options': pollLines,
+                'poll_votes': {},
                 'is_active': true,
               });
               await _fetchInitialData();
-              _showMsg('تم نشر الإعلان للدفعة بنجاح ✓');
+              _showMsg('تم النشر للدفعة بنجاح ✓');
             } catch (_) {
-              _showMsg('فشل نشر الإعلان', isError: true);
+              _showMsg('فشل النشر، تأكد من تنفيذ كود SQL الخاص بالتصويت', isError: true);
             } finally {
               if (mounted) setState(() => _isLoading = false);
             }
@@ -289,21 +323,74 @@ class _AdminScreenState extends State<AdminScreen> {
         ),
         if (_announcements.isNotEmpty) ...[
           const SizedBox(height: 12),
-          const Text('الإعلانات النشطة حالياً:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-          ..._announcements.map((a) => ListTile(
-                dense: true,
-                leading: const Icon(Icons.image_rounded, color: Color(0xFF4FD1C5)),
-                title: Text(a['title'] ?? ''),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-                  onPressed: () async {
-                    await _client.from('announcements').delete().eq('id', a['id']);
-                    await _fetchInitialData();
-                    _showMsg('تم حذف الإعلان');
-                  },
-                ),
-              )),
+          const Text('الإعلانات والتصويتات النشطة حالياً:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+          ..._announcements.map((a) {
+            final polls = (a['poll_options'] is List) ? (a['poll_options'] as List) : [];
+            final votes = (a['poll_votes'] is Map) ? (a['poll_votes'] as Map) : {};
+            return ListTile(
+              dense: true,
+              leading: Icon(polls.isNotEmpty ? Icons.poll_rounded : Icons.image_rounded, color: const Color(0xFF4FD1C5)),
+              title: Text(a['title'] ?? ''),
+              subtitle: polls.isNotEmpty ? Text('تصويت تفاعلي • إجمالي الأصوات: ${votes.length}') : null,
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                onPressed: () async {
+                  await _client.from('announcements').delete().eq('id', a['id']);
+                  await _fetchInitialData();
+                  _showMsg('تم الحذف');
+                },
+              ),
+            );
+          }),
         ],
+        const Divider(height: 36),
+        const Text('🎉 إضافة مناسبة للتقويم الميلادي (تظهر مكان الترحيب)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+        const SizedBox(height: 6),
+        const Text('تظهر تلقائياً في اليوم المحدد (مثال: عيد الفطر، بداية الاختبارات، تخرج الدفعة).', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: occDateCtrl,
+                decoration: const InputDecoration(labelText: 'التاريخ (YYYY-MM-DD)', hintText: '2026-11-25', border: OutlineInputBorder()),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 2,
+              child: TextField(
+                controller: occTitleCtrl,
+                decoration: const InputDecoration(labelText: 'نص المناسبة', hintText: 'بالتوفيق في الاختبارات 🎓', border: OutlineInputBorder()),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        ElevatedButton.icon(
+          icon: const Icon(Icons.event_available_rounded),
+          label: const Text('حفظ المناسبة في تقويم التطبيق'),
+          onPressed: () async {
+            final d = occDateCtrl.text.trim();
+            final t = occTitleCtrl.text.trim();
+            if (d.isEmpty || t.isEmpty) return;
+            setState(() => _isLoading = true);
+            try {
+              Map<String, dynamic> events = {};
+              final existing = await _client.from('app_settings').select('value').eq('key', 'calendar_occasions').maybeSingle();
+              if (existing != null && existing['value'] != null && existing['value'].toString().isNotEmpty) {
+                events = Map<String, dynamic>.from(jsonDecode(existing['value']));
+              }
+              events[d] = t;
+              await _client.from('app_settings').upsert({'key': 'calendar_occasions', 'value': jsonEncode(events)});
+              _showMsg('تمت إضافة المناسبة ليوم $d بنجاح ✓');
+            } catch (_) {
+              _showMsg('فشل حفظ المناسبة', isError: true);
+            } finally {
+              if (mounted) setState(() => _isLoading = false);
+            }
+          },
+        ),
         const Divider(height: 36),
         const Text('🚨 شريط التنبيه العاجل أعلى الرئيسية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.redAccent)),
         const SizedBox(height: 10),
@@ -425,6 +512,10 @@ class _AdminScreenState extends State<AdminScreen> {
     final fileType = TextEditingController(text: 'PDF');
     final fileUrl = TextEditingController();
 
+    int? refSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
+    final refTitleCtrl = TextEditingController();
+    final refContentCtrl = TextEditingController();
+
     return StatefulBuilder(
       builder: (context, setInnerState) => ListView(
         padding: const EdgeInsets.all(16),
@@ -496,6 +587,60 @@ class _AdminScreenState extends State<AdminScreen> {
             },
             child: const Text('حفظ الملف في المادة'),
           ),
+          const Divider(height: 36),
+          const Text('🎒 إضافة بطاقة مرجع سريع لمادة (حقيبة ليلة الامتحان)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 6),
+          const Text('تظهر مقسمة حسب كل مادة داخل حقيبة المراجعة ليلة الامتحان وتعمل بدون إنترنت.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 10),
+          if (_subjects.isNotEmpty)
+            DropdownButtonFormField<int>(
+              value: refSubjId,
+              decoration: const InputDecoration(labelText: 'المادة المرتبطة', border: OutlineInputBorder()),
+              items: _subjects.map<DropdownMenuItem<int>>((s) => DropdownMenuItem(value: s['id'], child: Text(s['name']))).toList(),
+              onChanged: (val) => setInnerState(() => refSubjId = val),
+            ),
+          const SizedBox(height: 8),
+          TextField(controller: refTitleCtrl, decoration: const InputDecoration(labelText: 'عنوان البطاقة (مثلاً: تصنيف أدوية الضغط)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: refContentCtrl, maxLines: 4, decoration: const InputDecoration(labelText: 'المحتوى المختصر والقوانين أو الملاحظات', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+            icon: const Icon(Icons.bookmark_add_rounded),
+            label: const Text('حفظ البطاقة في مرجع المادة', style: TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () async {
+              if (refSubjId == null || refTitleCtrl.text.trim().isEmpty || refContentCtrl.text.trim().isEmpty) return;
+              setState(() => _isLoading = true);
+              try {
+                await _client.from('subject_references').insert({
+                  'subject_id': refSubjId,
+                  'title': refTitleCtrl.text.trim(),
+                  'content': refContentCtrl.text.trim(),
+                });
+                await _fetchInitialData();
+                _showMsg('تمت إضافة بطاقة المرجع للمادة بنجاح ✓');
+              } catch (_) {
+                _showMsg('فشل الحفظ، تأكد من إنشاء جدول subject_references', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+          ),
+          if (_subjectRefs.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ..._subjectRefs.take(15).map((r) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.menu_book_rounded, color: Color(0xFF4FD1C5)),
+                  title: Text(r['title'] ?? ''),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                    onPressed: () async {
+                      await _client.from('subject_references').delete().eq('id', r['id']);
+                      await _fetchInitialData();
+                    },
+                  ),
+                )),
+          ],
         ],
       ),
     );
@@ -617,7 +762,7 @@ class _AdminScreenState extends State<AdminScreen> {
                       SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'رادار التحضير السريع بالبلوتوث + الكود المتغير',
+                          'رادار التحضير السريع (نظري + مجموعات العملي)',
                           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
                         ),
                       ),
@@ -625,7 +770,7 @@ class _AdminScreenState extends State<AdminScreen> {
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    'التقط حضور القاعة كاملة في ثوانٍ عبر البلوتوث أو الكود المتغير كل 30 ثانية بدون الحاجة للإنترنت.',
+                    'التقط حضور القاعة أو مجموعة العملي في ثوانٍ عبر البلوتوث أو الكود المتغير كل 30 ثانية بدون إنترنت.',
                     style: TextStyle(fontSize: 12, color: Colors.white70),
                   ),
                   const SizedBox(height: 10),
@@ -719,7 +864,7 @@ class _AdminScreenState extends State<AdminScreen> {
             if (sessionCodes.length > 1)
               DropdownButtonFormField<String>(
                 value: selectedSession,
-                decoration: const InputDecoration(labelText: 'تصفية حسب كود الجلسة / المادة', border: OutlineInputBorder()),
+                decoration: const InputDecoration(labelText: 'تصفية حسب كود الجلسة / المادة / المجموعة', border: OutlineInputBorder()),
                 items: sessionCodes.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
                 onChanged: (v) => setInnerState(() => selectedSession = v ?? 'الكل'),
               ),
@@ -744,6 +889,11 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildDevicesAndDirectoryTab() {
+    final latestVerCtrl = TextEditingController(text: '1.3.0');
+    final minVerCtrl = TextEditingController(text: '1.0.0');
+    final updateUrlCtrl = TextEditingController(text: 'https://github.com/780ramialhakami780-jpg/IQ_Pharmacy39/releases/latest/download/IQ_Pharmacy39.apk');
+    final releaseNotesCtrl = TextEditingController();
+
     final suppIdCtrl = TextEditingController();
     final suppNameCtrl = TextEditingController();
     final suppRoleCtrl = TextEditingController();
@@ -764,13 +914,49 @@ class _AdminScreenState extends State<AdminScreen> {
       builder: (context, setInnerState) => ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('💬 إدارة قائمة المطورين والمناديب (للمحادثة الخاصة)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const Text('🚀 إدارة تحديثات البرنامج (تحديث البرنامج في الإعدادات)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
           const SizedBox(height: 6),
-          const Text('أضف رقم قيد المطور أو المندوب ليظهر للطلاب في زر "الدعم والتواصل" للمراسلة داخل التطبيق.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const Text('حدّد رقم الإصدار الجديد ليظهر للطلاب في شاشة تحديث البرنامج أو لفرض التحديث الإجباري.', style: TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 10),
-          TextField(controller: suppIdCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رقم قيد المطور / المندوب (لربط المحادثة بحسابه)', border: OutlineInputBorder())),
+          Row(
+            children: [
+              Expanded(child: TextField(controller: latestVerCtrl, decoration: const InputDecoration(labelText: 'أحدث إصدار متاح', border: OutlineInputBorder()))),
+              const SizedBox(width: 8),
+              Expanded(child: TextField(controller: minVerCtrl, decoration: const InputDecoration(labelText: 'الحد الأدنى الإجباري', border: OutlineInputBorder()))),
+            ],
+          ),
           const SizedBox(height: 8),
-          TextField(controller: suppNameCtrl, decoration: const InputDecoration(labelText: 'الاسم الظاهر للطلاب (مثلاً: د. رامي الحكمي)', border: OutlineInputBorder())),
+          TextField(controller: updateUrlCtrl, decoration: const InputDecoration(labelText: 'رابط تحميل التحديث (APK)', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: releaseNotesCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'ملاحظات وما الجديد في هذا التحديث', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+            icon: const Icon(Icons.system_update_rounded),
+            label: const Text('حفظ إعدادات التحديث', style: TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () async {
+              setState(() => _isLoading = true);
+              try {
+                await _client.from('app_settings').upsert([
+                  {'key': 'latest_version', 'value': latestVerCtrl.text.trim()},
+                  {'key': 'min_version', 'value': minVerCtrl.text.trim()},
+                  {'key': 'update_url', 'value': updateUrlCtrl.text.trim()},
+                  {'key': 'update_notes', 'value': releaseNotesCtrl.text.trim()},
+                ]);
+                _showMsg('تم تحديث بيانات الإصدار بنجاح ✓');
+              } catch (_) {
+                _showMsg('فشل حفظ بيانات التحديث', isError: true);
+              } finally {
+                if (mounted) setState(() => _isLoading = false);
+              }
+            },
+          ),
+          const Divider(height: 36),
+          const Text('💬 إدارة قائمة المطورين والمناديب (للمحادثة الخاصة)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 10),
+          TextField(controller: suppIdCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رقم قيد المطور / المندوب', border: OutlineInputBorder())),
+          const SizedBox(height: 8),
+          TextField(controller: suppNameCtrl, decoration: const InputDecoration(labelText: 'الاسم الظاهر للطلاب', border: OutlineInputBorder())),
           const SizedBox(height: 8),
           TextField(controller: suppRoleCtrl, decoration: const InputDecoration(labelText: 'الصفة (مثلاً: مطور التطبيق / مندوب الدفعة)', border: OutlineInputBorder())),
           const SizedBox(height: 10),
