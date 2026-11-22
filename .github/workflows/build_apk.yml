@@ -30,7 +30,14 @@ jobs:
       - name: Initialize Platforms
         run: |
           flutter create . --platforms=android,web --org ye.su --project-name iq_pharmacy39
+          if [ -f google-services.json ]; then
+            cp google-services.json android/app/google-services.json
+          fi
+          if [ -f android/settings.gradle.kts ]; then
+            sed -i 's/id("com.android.application")/id("com.android.application")\n    id("com.google.gms.google-services") version "4.4.2" apply false/' android/settings.gradle.kts
+          fi
           if [ -f android/app/build.gradle.kts ]; then
+            sed -i 's/id("com.android.application")/id("com.android.application")\n    id("com.google.gms.google-services")/' android/app/build.gradle.kts
             printf '\nandroid {\n  compileSdk = 37\n  compileOptions {\n    isCoreLibraryDesugaringEnabled = true\n  }\n}\ndependencies {\n  coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' >> android/app/build.gradle.kts
           elif [ -f android/app/build.gradle ]; then
             printf '\nandroid {\n  compileSdk 37\n  compileOptions {\n    coreLibraryDesugaringEnabled true\n  }\n}\ndependencies {\n  coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"\n}\n' >> android/app/build.gradle
