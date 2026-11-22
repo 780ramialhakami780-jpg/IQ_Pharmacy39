@@ -18,6 +18,8 @@ import 'subject_screen.dart';
 import 'admin_screen.dart';
 import 'gpa_screen.dart';
 import 'directory_screen.dart';
+import 'startup_manager.dart';
+import 'notification_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -56,6 +58,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadLocalData();
     _syncWithCloud(silent: true);
     _startBannerAutoSlide();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        StartupManager.checkOnStartup(context);
+      }
+    });
   }
 
   @override
@@ -272,20 +279,31 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildAssignmentsTab(cardBg),
         ];
 
-        return _wrapWithWallpaper(
-          Scaffold(
-            body: SafeArea(child: pages[_currentIndex]),
-            bottomNavigationBar: BottomNavigationBar(
-              currentIndex: _currentIndex,
-              onTap: (index) => setState(() => _currentIndex = index),
-              backgroundColor: cardBg,
-              selectedItemColor: accent,
-              unselectedItemColor: Colors.grey,
-              items: [
-                BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
-                BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
-                BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
-              ],
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, result) async {
+            if (didPop) return;
+            if (_currentIndex != 0) {
+              setState(() => _currentIndex = 0);
+              return;
+            }
+            await StartupManager.showExitDialog(context);
+          },
+          child: _wrapWithWallpaper(
+            Scaffold(
+              body: SafeArea(child: pages[_currentIndex]),
+              bottomNavigationBar: BottomNavigationBar(
+                currentIndex: _currentIndex,
+                onTap: (index) => setState(() => _currentIndex = index),
+                backgroundColor: cardBg,
+                selectedItemColor: accent,
+                unselectedItemColor: Colors.grey,
+                items: [
+                  BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
+                  BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
+                  BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
+                ],
+              ),
             ),
           ),
         );
@@ -1295,7 +1313,7 @@ class _HomeScreenState extends State<HomeScreen> {
               body: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                                    FutureBuilder<SharedPreferences>(
+                  FutureBuilder<SharedPreferences>(
                     future: SharedPreferences.getInstance(),
                     builder: (context, snap) {
                       final prefs = snap.data;
@@ -1321,6 +1339,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ? null
                                   : (v) async {
                                       await prefs.setBool('notif_master_enabled', v);
+                                      unawaited(NotificationService.syncUserTags());
                                       setSettingsState(() {});
                                     },
                             ),
@@ -1332,6 +1351,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ? null
                                   : (v) async {
                                       await prefs.setBool('notif_academic_enabled', v);
+                                      unawaited(NotificationService.syncUserTags());
                                       setSettingsState(() {});
                                     },
                             ),
@@ -1343,6 +1363,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ? null
                                   : (v) async {
                                       await prefs.setBool('notif_support_enabled', v);
+                                      unawaited(NotificationService.syncUserTags());
                                       setSettingsState(() {});
                                     },
                             ),
@@ -1354,6 +1375,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ? null
                                   : (v) async {
                                       await prefs.setBool('notif_batch_chat_muted', v);
+                                      unawaited(NotificationService.syncUserTags());
                                       setSettingsState(() {});
                                     },
                             ),
@@ -2143,6 +2165,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     final prefs = await SharedPreferences.getInstance();
     final nextVal = !_isChatMuted;
     await prefs.setBool('notif_batch_chat_muted', nextVal);
+    unawaited(NotificationService.syncUserTags());
     if (!mounted) return;
     setState(() => _isChatMuted = nextVal);
     ScaffoldMessenger.of(context).showSnackBar(
