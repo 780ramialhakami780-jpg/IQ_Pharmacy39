@@ -28,6 +28,9 @@ class _SubjectScreenState extends State<SubjectScreen> {
   List<dynamic> _questions = [];
   List<dynamic> _materials = [];
   Set<int> _wrongQuestionIds = {};
+  Set<int> _completedMaterialIds = {};
+  Set<int> _favQuestionIds = {};
+  Set<int> _favMaterialIds = {};
   Map<int, String> _downloadedFiles = {};
   Set<int> _downloadingIds = {};
 
@@ -59,11 +62,17 @@ class _SubjectScreenState extends State<SubjectScreen> {
     final cachedQ = prefs.getString('cache_questions_$_subjectId');
     final cachedM = prefs.getString('cache_materials_$_subjectId');
     final wrongList = prefs.getStringList('wrong_q_$_subjectId') ?? [];
+    final completedList = prefs.getStringList('completed_mat_$_subjectId') ?? [];
+    final favQList = prefs.getStringList('fav_q_$_subjectId') ?? [];
+    final favMList = prefs.getStringList('fav_m_$_subjectId') ?? [];
 
     setState(() {
       if (cachedQ != null) _questions = jsonDecode(cachedQ);
       if (cachedM != null) _materials = jsonDecode(cachedM);
       _wrongQuestionIds = wrongList.map((e) => int.tryParse(e) ?? -1).where((e) => e != -1).toSet();
+      _completedMaterialIds = completedList.map((e) => int.tryParse(e) ?? -1).where((e) => e != -1).toSet();
+      _favQuestionIds = favQList.map((e) => int.tryParse(e) ?? -1).where((e) => e != -1).toSet();
+      _favMaterialIds = favMList.map((e) => int.tryParse(e) ?? -1).where((e) => e != -1).toSet();
       _totalAnswered = prefs.getInt('stats_total_$_subjectId') ?? 0;
       _correctAnswered = prefs.getInt('stats_correct_$_subjectId') ?? 0;
       _isLoading = false;
@@ -86,6 +95,51 @@ class _SubjectScreenState extends State<SubjectScreen> {
       });
       await _checkDownloadedFiles();
     } catch (_) {}
+  }
+
+  Future<void> _toggleMaterialCompleted(int matId) async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      if (_completedMaterialIds.contains(matId)) {
+        _completedMaterialIds.remove(matId);
+      } else {
+        _completedMaterialIds.add(matId);
+      }
+    });
+    await prefs.setStringList(
+      'completed_mat_$_subjectId',
+      _completedMaterialIds.map((e) => e.toString()).toList(),
+    );
+  }
+
+  Future<void> _toggleMaterialFavorite(int matId) async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      if (_favMaterialIds.contains(matId)) {
+        _favMaterialIds.remove(matId);
+      } else {
+        _favMaterialIds.add(matId);
+      }
+    });
+    await prefs.setStringList(
+      'fav_m_$_subjectId',
+      _favMaterialIds.map((e) => e.toString()).toList(),
+    );
+  }
+
+  Future<void> _toggleQuestionFavorite(int qId) async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      if (_favQuestionIds.contains(qId)) {
+        _favQuestionIds.remove(qId);
+      } else {
+        _favQuestionIds.add(qId);
+      }
+    });
+    await prefs.setStringList(
+      'fav_q_$_subjectId',
+      _favQuestionIds.map((e) => e.toString()).toList(),
+    );
   }
 
   Future<void> _checkDownloadedFiles() async {
@@ -113,7 +167,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
 
     if (rawUrl.isEmpty) return;
 
-    // 1. إذا كان فيديو أو صوت، يفتح مباشرة في تليجرام أو يوتيوب
     if (type.contains('VIDEO') || type.contains('AUDIO') || kIsWeb) {
       final uri = Uri.tryParse(rawUrl);
       if (uri != null) {
@@ -122,13 +175,11 @@ class _SubjectScreenState extends State<SubjectScreen> {
       return;
     }
 
-    // 2. إذا كان ملف PDF: إذا كان محملاً مسبقاً يُفتح أوفلاين فوراً
     if (_downloadedFiles.containsKey(id)) {
       await OpenFilex.open(_downloadedFiles[id]!);
       return;
     }
 
-    // 3. تحميل ملف PDF وحفظه في ذاكرة التطبيق للعمل بدون إنترنت لاحقاً
     if (_downloadingIds.contains(id)) return;
     setState(() => _downloadingIds.add(id));
 
@@ -150,7 +201,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _downloadingIds.remove(id));
-      // في حال تعذر التحميل الداخلي (مثل روابط Drive غير المباشرة) يفتح في المتصفح
       final uri = Uri.tryParse(rawUrl);
       if (uri != null) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -229,11 +279,14 @@ class _SubjectScreenState extends State<SubjectScreen> {
       itemCount: _questions.length,
       itemBuilder: (context, index) {
         final q = _questions[index];
+        final int qId = q['id'];
         return _QuestionCard(
           index: index + 1,
           question: q,
           accentColor: _themeColor,
-          onAnswered: (isCorrect) => _recordAnswer(q['id'], isCorrect),
+          isFavorite: _favQuestionIds.contains(qId),
+          onToggleFavorite: () => _toggleQuestionFavorite(qId),
+          onAnswered: (isCorrect) => _recordAnswer(qId, isCorrect),
         );
       },
     );
@@ -246,49 +299,121 @@ class _SubjectScreenState extends State<SubjectScreen> {
       );
     }
 
-    return ListView.builder(
+    final int completedCount = _materials.where((m) => _completedMaterialIds.contains(m['id'])).length;
+    final double progress = _materials.isEmpty ? 0.0 : completedCount / _materials.length;
+
+    return ListView(
       padding: const EdgeInsets.all(16),
-      itemCount: _materials.length,
-      itemBuilder: (context, index) {
-        final m = _materials[index];
-        final int id = m['id'];
-        final type = (m['file_type'] ?? 'PDF').toString().toUpperCase();
-        final bool isPdf = !type.contains('AUDIO') && !type.contains('VIDEO');
-        final bool isSavedOffline = _downloadedFiles.containsKey(id);
-        final bool isDownloading = _downloadingIds.contains(id);
-
-        IconData icon = Icons.picture_as_pdf_rounded;
-        if (type.contains('AUDIO')) icon = Icons.headphones_rounded;
-        if (type.contains('VIDEO')) icon = Icons.play_circle_fill_rounded;
-
-        return Card(
-          color: const Color(0xFF181B20),
-          margin: const EdgeInsets.only(bottom: 12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-          child: ListTile(
-            onTap: () => _handleMaterialTap(m),
-            leading: CircleAvatar(
-              backgroundColor: _themeColor.withOpacity(0.2),
-              child: Icon(icon, color: _themeColor),
-            ),
-            title: Text(m['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-            subtitle: Text(
-              isPdf
-                  ? 'المحاضرة ${m['lecture_number']}  •  ${isSavedOffline ? "محفوظ أوفلاين ✅" : "PDF (اضغط للتحميل والحفظ)"}'
-                  : 'المحاضرة ${m['lecture_number']}  •  رابط $type خارجي',
-              style: TextStyle(fontSize: 12, color: isSavedOffline ? Colors.greenAccent : Colors.grey),
-            ),
-            trailing: isDownloading
-                ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2))
-                : Icon(
-                    isPdf
-                        ? (isSavedOffline ? Icons.offline_pin_rounded : Icons.download_rounded)
-                        : Icons.open_in_new_rounded,
-                    color: isSavedOffline ? Colors.greenAccent : const Color(0xFF4FD1C5),
-                  ),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          margin: const EdgeInsets.only(bottom: 14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF181B20),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: _themeColor.withOpacity(0.35)),
           ),
-        );
-      },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('نسبة إنجاز مذاكرة المادة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  Text(
+                    '${(progress * 100).round()}% ($completedCount/${_materials.length})',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: _themeColor),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 8,
+                  backgroundColor: Colors.white12,
+                  color: _themeColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+        ...List.generate(_materials.length, (index) {
+          final m = _materials[index];
+          final int id = m['id'];
+          final type = (m['file_type'] ?? 'PDF').toString().toUpperCase();
+          final bool isPdf = !type.contains('AUDIO') && !type.contains('VIDEO');
+          final bool isSavedOffline = _downloadedFiles.containsKey(id);
+          final bool isDownloading = _downloadingIds.contains(id);
+          final bool isDone = _completedMaterialIds.contains(id);
+          final bool isFav = _favMaterialIds.contains(id);
+
+          IconData icon = Icons.picture_as_pdf_rounded;
+          if (type.contains('AUDIO')) icon = Icons.headphones_rounded;
+          if (type.contains('VIDEO')) icon = Icons.play_circle_fill_rounded;
+
+          return Card(
+            color: const Color(0xFF181B20),
+            margin: const EdgeInsets.only(bottom: 12),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            child: ListTile(
+              onTap: () => _handleMaterialTap(m),
+              leading: CircleAvatar(
+                backgroundColor: _themeColor.withOpacity(0.2),
+                child: Icon(icon, color: _themeColor),
+              ),
+              title: Text(
+                m['title'] ?? '',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  decoration: isDone ? TextDecoration.lineThrough : null,
+                  color: isDone ? Colors.grey : null,
+                ),
+              ),
+              subtitle: Text(
+                isPdf
+                    ? 'المحاضرة ${m['lecture_number']}  •  ${isSavedOffline ? "محفوظ أوفلاين ✅" : "PDF (اضغط للتحميل)"}'
+                    : 'المحاضرة ${m['lecture_number']}  •  رابط $type خارجي',
+                style: TextStyle(fontSize: 12, color: isSavedOffline ? Colors.greenAccent : Colors.grey),
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'مفضلة ليلة الامتحان',
+                    icon: Icon(
+                      isFav ? Icons.star_rounded : Icons.star_border_rounded,
+                      color: isFav ? Colors.amber : Colors.grey,
+                      size: 22,
+                    ),
+                    onPressed: () => _toggleMaterialFavorite(id),
+                  ),
+                  IconButton(
+                    tooltip: 'تمت المذاكرة',
+                    icon: Icon(
+                      isDone ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                      color: isDone ? Colors.greenAccent : Colors.grey,
+                      size: 22,
+                    ),
+                    onPressed: () => _toggleMaterialCompleted(id),
+                  ),
+                  if (isDownloading)
+                    const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  else
+                    Icon(
+                      isPdf
+                          ? (isSavedOffline ? Icons.offline_pin_rounded : Icons.download_rounded)
+                          : Icons.open_in_new_rounded,
+                      color: isSavedOffline ? Colors.greenAccent : const Color(0xFF4FD1C5),
+                      size: 20,
+                    ),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
     );
   }
 
@@ -305,11 +430,14 @@ class _SubjectScreenState extends State<SubjectScreen> {
       itemCount: weakQuestions.length,
       itemBuilder: (context, index) {
         final q = weakQuestions[index];
+        final int qId = q['id'];
         return _QuestionCard(
           index: index + 1,
           question: q,
           accentColor: Colors.redAccent,
-          onAnswered: (isCorrect) => _recordAnswer(q['id'], isCorrect),
+          isFavorite: _favQuestionIds.contains(qId),
+          onToggleFavorite: () => _toggleQuestionFavorite(qId),
+          onAnswered: (isCorrect) => _recordAnswer(qId, isCorrect),
         );
       },
     );
@@ -431,12 +559,16 @@ class _QuestionCard extends StatefulWidget {
   final int index;
   final Map<String, dynamic> question;
   final Color accentColor;
+  final bool isFavorite;
+  final VoidCallback onToggleFavorite;
   final Function(bool isCorrect) onAnswered;
 
   const _QuestionCard({
     required this.index,
     required this.question,
     required this.accentColor,
+    required this.isFavorite,
+    required this.onToggleFavorite,
     required this.onAnswered,
   });
 
@@ -463,8 +595,27 @@ class _QuestionCardState extends State<_QuestionCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('سؤال ${widget.index}: ${widget.question['question_text'] ?? ''}',
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, height: 1.4)),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    'سؤال ${widget.index}: ${widget.question['question_text'] ?? ''}',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, height: 1.4),
+                  ),
+                ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  tooltip: 'إضافة لحقيبة ليلة الامتحان',
+                  icon: Icon(
+                    widget.isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+                    color: widget.isFavorite ? Colors.amber : Colors.grey,
+                  ),
+                  onPressed: widget.onToggleFavorite,
+                ),
+              ],
+            ),
             const SizedBox(height: 12),
             ...List.generate(options.length, (i) {
               Color borderColor = Colors.white12;
