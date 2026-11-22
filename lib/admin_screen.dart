@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image_picker/image_picker.dart';
+import 'attendance_radar.dart';
 
 class AdminScreen extends StatefulWidget {
   final String adminName;
@@ -195,7 +196,6 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 1. تبويب شريط الإعلانات المصوّرة + الشريط العاجل + الإشعارات + التكاليف
   Widget _buildNotificationsAndTasksTab() {
     final annTitleCtrl = TextEditingController();
     final annDescCtrl = TextEditingController();
@@ -415,7 +415,6 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 2. تبويب إضافة مادة + رفع رابط ملف/محاضرة
   Widget _buildSubjectsAndFilesTab() {
     final subjName = TextEditingController();
     final subjDesc = TextEditingController();
@@ -502,7 +501,6 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 3. تبويب إضافة سؤال لبنك الأسئلة
   Widget _buildAddQuestionTab() {
     int? selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
     final qText = TextEditingController();
@@ -583,7 +581,6 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 4. تبويب الجدول + تصدير كشوفات الحضور متضمنة البريد الجامعي للكلية
   Widget _buildScheduleAndAttendanceTab() {
     String selectedDay = 'السبت';
     final orderCtrl = TextEditingController(text: 'المحاضرة الأولى');
@@ -604,6 +601,53 @@ class _AdminScreenState extends State<AdminScreen> {
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFF0F172A), Color(0xFF115E59)]),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF4FD1C5)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.radar_rounded, color: Color(0xFF4FD1C5), size: 28),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'رادار التحضير السريع بالبلوتوث + الكود المتغير',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'التقط حضور القاعة كاملة في ثوانٍ عبر البلوتوث أو الكود المتغير كل 30 ثانية بدون الحاجة للإنترنت.',
+                    style: TextStyle(fontSize: 12, color: Colors.white70),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      label: const Text('فتح رادار التحضير الآن', style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => AdminRadarScreen(adminName: widget.adminName)),
+                        );
+                        _fetchInitialData();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 32),
             const Text('📅 إضافة محاضرة إلى الجدول', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
@@ -699,7 +743,6 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
-  // 5. تبويب إدارة المطورين/المناديب للتواصل + نبذة التطبيق + فك الأجهزة + الدليل
   Widget _buildDevicesAndDirectoryTab() {
     final suppIdCtrl = TextEditingController();
     final suppNameCtrl = TextEditingController();
@@ -916,6 +959,4 @@ class _AdminScreenState extends State<AdminScreen> {
       ),
     );
   }
-
-
 }
