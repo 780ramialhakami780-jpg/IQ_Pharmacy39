@@ -30,13 +30,19 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  static const String currentAppVersion = '1.3.0';
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
   int _currentIndex = 0;
   String _studentName = '';
   String _studentId = '';
   String _universityEmail = '';
+  String _profilePhotoPath = '';
+  String _lastSyncText = '';
   bool _isAdmin = false;
   bool _isSyncing = false;
   String _urgentBanner = '';
+  Map<String, String> _calendarOccasions = {};
 
   List<dynamic> _subjects = [];
   List<dynamic> _schedule = [];
@@ -44,6 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<dynamic> _notifications = [];
   List<dynamic> _myAttendance = [];
   List<dynamic> _announcements = [];
+  List<dynamic> _subjectReferences = [];
 
   final PageController _bannerPageCtrl = PageController();
   int _currentBannerPage = 0;
@@ -52,6 +59,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final List<String> _days = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
   int _selectedDayIndex = 0;
+
+  String get _firstName {
+    final parts = _studentName.trim().split(RegExp(r'\s+'));
+    return parts.isNotEmpty && parts.first.isNotEmpty ? parts.first : 'طالب';
+  }
 
   @override
   void initState() {
@@ -73,6 +85,31 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  String _smartGreetingText() {
+    final now = DateTime.now();
+    final isoDate =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
+    if (_calendarOccasions.containsKey(isoDate) && _calendarOccasions[isoDate]!.trim().isNotEmpty) {
+      return _calendarOccasions[isoDate]!.trim();
+    }
+
+    if (now.weekday == DateTime.friday) {
+      return AppPrefs.tr('جمعة مباركة ✨', 'Blessed Friday ✨');
+    }
+    if (now.month == 9 && now.day == 25) {
+      return AppPrefs.tr('يوم صيدلي سعيد 💊', 'Happy World Pharmacists Day 💊');
+    }
+    if (now.month == 1 && now.day == 1) {
+      return AppPrefs.tr('عام ميلادي سعيد 🎉', 'Happy New Year 🎉');
+    }
+
+    if (now.hour >= 4 && now.hour < 12) {
+      return AppPrefs.tr('صباح الخير،', 'Good morning,');
+    }
+    return AppPrefs.tr('مساء الخير،', 'Good evening,');
+  }
+
   String _formattedTodayDate() {
     final now = DateTime.now();
     if (AppPrefs.isEnglish) {
@@ -80,14 +117,14 @@ class _HomeScreenState extends State<HomeScreen> {
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       return '${weekDays[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
     } else {
-      const weekDays = ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد'];
+      const weekDays = ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الجمعة', 'الجمعة', 'السبت', 'الأحد'];
       const months = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
       return '${weekDays[now.weekday - 1]}، ${now.day} ${months[now.month - 1]}';
     }
   }
 
   void _startBannerAutoSlide() {
-    _bannerTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _bannerTimer = Timer.periodic(const Duration(seconds: 6), (_) {
       if (!mounted || _announcements.length <= 1 || _bannerDismissed) return;
       if (_bannerPageCtrl.hasClients) {
         final next = (_currentBannerPage + 1) % _announcements.length;
@@ -102,12 +139,21 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadLocalData() async {
     final prefs = await SharedPreferences.getInstance();
+    Map<String, String> occMap = {};
+    try {
+      final rawOcc = prefs.getString('cache_calendar_occasions') ?? '{}';
+      occMap = Map<String, String>.from(jsonDecode(rawOcc));
+    } catch (_) {}
+
     setState(() {
       _studentName = prefs.getString('full_name') ?? 'طالب صيدلة';
       _studentId = prefs.getString('student_id') ?? '';
       _universityEmail = prefs.getString('university_email') ?? '';
+      _profilePhotoPath = prefs.getString('profile_photo_path') ?? '';
+      _lastSyncText = prefs.getString('last_sync_time') ?? '';
       _isAdmin = prefs.getBool('is_admin') ?? false;
       _urgentBanner = prefs.getString('cache_urgent_banner') ?? '';
+      _calendarOccasions = occMap;
 
       _subjects = jsonDecode(prefs.getString('cache_subjects') ?? '[]');
       _schedule = jsonDecode(prefs.getString('cache_schedule') ?? '[]');
@@ -115,6 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _notifications = jsonDecode(prefs.getString('cache_notifications') ?? '[]');
       _myAttendance = jsonDecode(prefs.getString('cache_my_attendance') ?? '[]');
       _announcements = jsonDecode(prefs.getString('cache_announcements') ?? '[]');
+      _subjectReferences = jsonDecode(prefs.getString('cache_subject_references') ?? '[]');
     });
   }
 
@@ -151,15 +198,25 @@ class _HomeScreenState extends State<HomeScreen> {
             .order('created_at', ascending: false);
       } catch (_) {}
 
-      String bannerText = '';
+      List<dynamic> refsData = _subjectReferences;
       try {
-        final bannerRes = await client
+        refsData = await client.from('subject_references').select().order('id');
+      } catch (_) {}
+
+      String bannerText = '';
+      Map<String, String> occMap = _calendarOccasions;
+      try {
+        final settingsRows = await client
             .from('app_settings')
-            .select('value')
-            .eq('key', 'urgent_banner')
-            .maybeSingle();
-        if (bannerRes != null && bannerRes['value'] != null) {
-          bannerText = bannerRes['value'].toString().trim();
+            .select('key, value')
+            .inFilter('key', ['urgent_banner', 'calendar_occasions']);
+        for (final row in settingsRows) {
+          final k = (row['key'] ?? '').toString();
+          final v = (row['value'] ?? '').toString().trim();
+          if (k == 'urgent_banner') bannerText = v;
+          if (k == 'calendar_occasions' && v.isNotEmpty) {
+            occMap = Map<String, String>.from(jsonDecode(v));
+          }
         }
       } catch (_) {}
 
@@ -187,27 +244,37 @@ class _HomeScreenState extends State<HomeScreen> {
         } catch (_) {}
       }
 
+      final now = DateTime.now();
+      final syncStamp =
+          '${now.day}/${now.month} - ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
       await prefs.setBool('is_admin', cloudAdmin);
       await prefs.setString('university_email', cloudEmail);
+      await prefs.setString('last_sync_time', syncStamp);
       await prefs.setString('cache_urgent_banner', bannerText);
+      await prefs.setString('cache_calendar_occasions', jsonEncode(occMap));
       await prefs.setString('cache_subjects', jsonEncode(subjectsData));
       await prefs.setString('cache_schedule', jsonEncode(scheduleData));
       await prefs.setString('cache_assignments', jsonEncode(assignmentsData));
       await prefs.setString('cache_notifications', jsonEncode(notificationsData));
       await prefs.setString('cache_my_attendance', jsonEncode(attendanceData));
       await prefs.setString('cache_announcements', jsonEncode(announcementsData));
+      await prefs.setString('cache_subject_references', jsonEncode(refsData));
 
       if (!mounted) return;
       setState(() {
         _isAdmin = cloudAdmin;
         _universityEmail = cloudEmail;
+        _lastSyncText = syncStamp;
         _urgentBanner = bannerText;
+        _calendarOccasions = occMap;
         _subjects = subjectsData;
         _schedule = scheduleData;
         _assignments = assignmentsData;
         _notifications = notificationsData;
         _myAttendance = attendanceData;
         _announcements = announcementsData;
+        _subjectReferences = refsData;
       });
 
       if (!silent && mounted) {
@@ -229,6 +296,37 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } finally {
       if (mounted) setState(() => _isSyncing = false);
+    }
+  }
+
+  Future<void> _voteOnAnnouncementPoll(Map<String, dynamic> annItem, int optionIndex) async {
+    if (_studentId.isEmpty) return;
+    final annId = annItem['id'];
+    final Map<String, dynamic> votes = Map<String, dynamic>.from(
+      annItem['poll_votes'] is Map ? annItem['poll_votes'] : {},
+    );
+    votes[_studentId] = optionIndex;
+
+    setState(() {
+      annItem['poll_votes'] = votes;
+    });
+
+    try {
+      await Supabase.instance.client
+          .from('announcements')
+          .update({'poll_votes': votes})
+          .eq('id', annId);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cache_announcements', jsonEncode(_announcements));
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(AppPrefs.tr('تعذر إرسال صوتك، تحقق من الإنترنت', 'Failed to submit vote')),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     }
   }
 
@@ -296,6 +394,10 @@ class _HomeScreenState extends State<HomeScreen> {
           canPop: false,
           onPopInvokedWithResult: (didPop, result) async {
             if (didPop) return;
+            if (_scaffoldKey.currentState?.isEndDrawerOpen == true) {
+              _scaffoldKey.currentState?.closeEndDrawer();
+              return;
+            }
             if (_currentIndex != 0) {
               setState(() => _currentIndex = 0);
               return;
@@ -304,10 +406,19 @@ class _HomeScreenState extends State<HomeScreen> {
           },
           child: _wrapWithWallpaper(
             Scaffold(
+              key: _scaffoldKey,
+              endDrawer: _buildSideMenuDrawer(cardBg, accent),
               body: SafeArea(child: pages[_currentIndex]),
               bottomNavigationBar: BottomNavigationBar(
                 currentIndex: _currentIndex,
-                onTap: (index) => setState(() => _currentIndex = index),
+                type: BottomNavigationBarType.fixed,
+                onTap: (index) {
+                  if (index == 3) {
+                    _openBatchChat();
+                    return;
+                  }
+                  setState(() => _currentIndex = index);
+                },
                 backgroundColor: cardBg,
                 selectedItemColor: accent,
                 unselectedItemColor: Colors.grey,
@@ -315,6 +426,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   BottomNavigationBarItem(icon: const Icon(Icons.home_rounded), label: AppPrefs.tr('الرئيسية', 'Home')),
                   BottomNavigationBarItem(icon: const Icon(Icons.calendar_month_rounded), label: AppPrefs.tr('الجدول', 'Schedule')),
                   BottomNavigationBarItem(icon: const Icon(Icons.push_pin_rounded), label: AppPrefs.tr('التكاليف', 'Assignments')),
+                  BottomNavigationBarItem(icon: const Icon(Icons.chat_rounded), label: AppPrefs.tr('الدردشة', 'Chat')),
                 ],
               ),
             ),
@@ -324,10 +436,309 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildSideMenuDrawer(Color cardBg, Color accent) {
+    final isDark = AppPrefs.isDark;
+    final hasPhoto = _profilePhotoPath.isNotEmpty && !kIsWeb && File(_profilePhotoPath).existsSync();
+
+    return Drawer(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      child: SafeArea(
+        child: Column(
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topRight,
+                  end: Alignment.bottomLeft,
+                  colors: isDark
+                      ? [const Color(0xFF0F2927), const Color(0xFF16202A)]
+                      : [accent.withOpacity(0.22), accent.withOpacity(0.06)],
+                ),
+                border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.18))),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      GestureDetector(
+                        onTap: () async {
+                          final picker = ImagePicker();
+                          final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+                          if (picked != null) {
+                            final prefs = await SharedPreferences.getInstance();
+                            await prefs.setString('profile_photo_path', picked.path);
+                            if (mounted) setState(() => _profilePhotoPath = picked.path);
+                          }
+                        },
+                        child: Stack(
+                          children: [
+                            CircleAvatar(
+                              radius: 30,
+                              backgroundColor: accent.withOpacity(0.2),
+                              backgroundImage: hasPhoto ? FileImage(File(_profilePhotoPath)) : null,
+                              child: !hasPhoto ? Icon(Icons.person_rounded, size: 32, color: accent) : null,
+                            ),
+                            Positioned(
+                              bottom: 0,
+                              left: 0,
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                                child: const Icon(Icons.camera_alt_rounded, size: 12, color: Colors.black),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _studentName,
+                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, height: 1.3),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${AppPrefs.tr('رقم القيد:', 'ID:')} $_studentId',
+                              style: TextStyle(fontSize: 12.5, color: accent, fontWeight: FontWeight.w700),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: _universityEmail.isNotEmpty
+                          ? Colors.green.withOpacity(0.16)
+                          : Colors.orange.withOpacity(0.16),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: _universityEmail.isNotEmpty ? Colors.green : Colors.orange,
+                        width: 0.8,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _universityEmail.isNotEmpty ? Icons.verified_rounded : Icons.info_outline_rounded,
+                          size: 14,
+                          color: _universityEmail.isNotEmpty ? Colors.green : Colors.orange,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          _universityEmail.isNotEmpty
+                              ? AppPrefs.tr('البريد الجامعي: مرتبط ✓', 'University Email: Linked ✓')
+                              : AppPrefs.tr('البريد الجامعي: غير مرتبط', 'University Email: Not Linked'),
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: _universityEmail.isNotEmpty ? Colors.green : Colors.orange,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Text(
+                      AppPrefs.tr('الأدوات الدراسية والدفعة', 'Academic & Batch Tools'),
+                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.grey),
+                    ),
+                  ),
+                  _drawerToolTile(
+                    icon: Icons.medical_services_rounded,
+                    iconColor: Colors.tealAccent,
+                    title: AppPrefs.tr('حقيبة الصيدلي الإكلينيكي', 'Clinical Pharmacist Kit'),
+                    subtitle: AppPrefs.tr('الحاسبات السريرية، الجرعات، والقيم المخبرية', 'CrCl, pediatric doses & lab values'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => const ClinicalPharmacistBagScreen()));
+                    },
+                  ),
+                  _drawerToolTile(
+                    icon: Icons.auto_stories_rounded,
+                    iconColor: Colors.amberAccent,
+                    title: AppPrefs.tr('حقيبة المراجعة ليلة الامتحان', 'Exam Night Review Bag'),
+                    subtitle: AppPrefs.tr('الأسئلة والملفات المفضلة + مرجع المواد', 'Starred items & subject references'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ExamNightReviewScreen(
+                            subjects: _subjects,
+                            references: _subjectReferences,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  _drawerToolTile(
+                    icon: Icons.calculate_rounded,
+                    iconColor: Colors.lightBlueAccent,
+                    title: AppPrefs.tr('حاسبة المعدل التراكمي (GPA)', 'GPA Calculator'),
+                    subtitle: AppPrefs.tr('حساب المعدل الفصلي والتراكمي بالساعات', 'Semester & cumulative GPA'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
+                    },
+                  ),
+                  _drawerToolTile(
+                    icon: Icons.contact_phone_rounded,
+                    iconColor: Colors.purpleAccent,
+                    title: AppPrefs.tr('دليل الدفعة والمناديب', 'Batch Directory & Links'),
+                    subtitle: AppPrefs.tr('أرقام التواصل والروابط المهمة للدفعة', 'Contacts & useful links'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
+                    },
+                  ),
+
+                  const Divider(height: 24),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Text(
+                      AppPrefs.tr('التحكم والنظام', 'System & Control'),
+                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.grey),
+                    ),
+                  ),
+                  _drawerToolTile(
+                    icon: _isSyncing ? Icons.hourglass_top_rounded : Icons.sync_rounded,
+                    iconColor: Colors.cyanAccent,
+                    title: AppPrefs.tr('مزامنة وتحديث البيانات', 'Sync & Update Data'),
+                    subtitle: _lastSyncText.isNotEmpty
+                        ? '${AppPrefs.tr('آخر مزامنة:', 'Last sync:')} $_lastSyncText'
+                        : AppPrefs.tr('اضغط لتحديث المواد والجدول', 'Tap to sync cloud data'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _syncWithCloud(silent: false);
+                    },
+                  ),
+                  _drawerToolTile(
+                    icon: Icons.settings_rounded,
+                    iconColor: Colors.orangeAccent,
+                    title: AppPrefs.tr('الإعدادات والتخصيص', 'Settings & Customization'),
+                    subtitle: AppPrefs.tr('السمات، الخطوط، الإشعارات، وتحديث البرنامج', 'Themes, fonts, alerts & software update'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openGeneralSettings();
+                    },
+                  ),
+                  if (_isAdmin)
+                    _drawerToolTile(
+                      icon: Icons.admin_panel_settings_rounded,
+                      iconColor: Colors.amber,
+                      title: AppPrefs.tr('لوحة إدارة الدفعة', 'Admin Control Panel'),
+                      subtitle: AppPrefs.tr('خاص بالمشرفين والمناديب', 'Admins & representatives only'),
+                      highlight: true,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _promptAdminPassword();
+                      },
+                    ),
+                ],
+              ),
+            ),
+
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: cardBg,
+                border: Border(top: BorderSide(color: Colors.grey.withOpacity(0.18))),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.language_rounded, size: 18, color: accent),
+                      const SizedBox(width: 8),
+                      Text(AppPrefs.tr('لغة التطبيق', 'Language'), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  SegmentedButton<String>(
+                    style: ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    segments: const [
+                      ButtonSegment(value: 'ar', label: Text('عربي', style: TextStyle(fontSize: 12))),
+                      ButtonSegment(value: 'en', label: Text('English', style: TextStyle(fontSize: 12))),
+                    ],
+                    selected: {AppPrefs.isEnglish ? 'en' : 'ar'},
+                    onSelectionChanged: (sel) async {
+                      await AppPrefs.setLang(sel.first);
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _drawerToolTile({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    bool highlight = false,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      decoration: highlight
+          ? BoxDecoration(
+              color: Colors.amber.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.amber.withOpacity(0.45)),
+            )
+          : null,
+      child: ListTile(
+        dense: true,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        leading: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: iconColor.withOpacity(0.15),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: iconColor, size: 21),
+        ),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+        subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        trailing: const Icon(Icons.chevron_right_rounded, size: 18, color: Colors.grey),
+        onTap: onTap,
+      ),
+    );
+  }
+
   Widget _buildDashboardTab(Color cardBg, Color accent) {
     final borderCol = Colors.grey.withOpacity(0.2);
     final radius = AppPrefs.cardRadius;
     final orderedSubjects = AppPrefs.applySubjectOrder(_subjects);
+    final isDark = AppPrefs.isDark;
 
     return RefreshIndicator(
       onRefresh: () => _syncWithCloud(silent: false),
@@ -362,80 +773,160 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
           ],
+
           Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(AppPrefs.tr('مرحباً بك،', 'Welcome,'), style: const TextStyle(color: Colors.grey, fontSize: 12)),
                     Text(
-                      _studentName,
+                      _smartGreetingText(),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                      style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _firstName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _miniHeaderBtn(
+                          icon: Icons.radar_rounded,
+                          tooltip: AppPrefs.tr('رادار التحضير', 'Attendance Radar'),
+                          onTap: _openFastRadarAttendance,
+                          cardBg: cardBg,
+                          accent: accent,
+                        ),
+                        const SizedBox(width: 8),
+                        _miniHeaderBtn(
+                          icon: Icons.qr_code_2_rounded,
+                          tooltip: AppPrefs.tr('كودي (QR)', 'My QR'),
+                          onTap: _showMyStudentQR,
+                          cardBg: cardBg,
+                          accent: accent,
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
-              InkWell(
-                onTap: () => setState(() => _currentIndex = 1),
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: cardBg,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: borderCol),
+
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                child: Image.asset(
+                  'logo.png',
+                  width: 46,
+                  height: 46,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => Image.asset(
+                    'icon.png',
+                    width: 44,
+                    height: 44,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => Icon(
+                      Icons.local_pharmacy_rounded,
+                      size: 42,
+                      color: accent,
+                    ),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.calendar_today_rounded, size: 13, color: accent),
-                      const SizedBox(width: 6),
-                      Text(
-                        _formattedTodayDate(),
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey),
+                ),
+              ),
+
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    InkWell(
+                      onTap: () => setState(() => _currentIndex = 1),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: cardBg,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: borderCol),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.calendar_today_rounded, size: 12, color: accent),
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text(
+                                _formattedTodayDate(),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.grey),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _miniHeaderBtn(
+                          icon: Icons.notifications_active_rounded,
+                          tooltip: AppPrefs.tr('الإشعارات', 'Alerts'),
+                          onTap: _openNotifications,
+                          cardBg: cardBg,
+                          accent: accent,
+                          badge: _notifications.length,
+                        ),
+                        const SizedBox(width: 8),
+                        _miniHeaderBtn(
+                          icon: Icons.menu_rounded,
+                          tooltip: AppPrefs.tr('القائمة والأدوات', 'Menu'),
+                          onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
+                          cardBg: cardBg,
+                          accent: accent,
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Row(
-              children: [
-                _topActionBtn(Icons.radar_rounded, AppPrefs.tr('تحضير فوري', 'Fast Check-in'), () => _openFastRadarAttendance(), cardBg, accent),
-                _topActionBtn(Icons.support_agent_rounded, AppPrefs.tr('الدعم والتواصل', 'Support'), () => _openSupportContactsSheet(), cardBg, accent),
-                _topActionBtn(Icons.qr_code_2_rounded, AppPrefs.tr('كودي (QR)', 'My QR'), () => _showMyStudentQR(), cardBg, accent),
-                _topActionBtn(Icons.calculate_rounded, AppPrefs.tr('حاسبة المعدل', 'GPA Calc'), () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
-                }, cardBg, accent),
-                _topActionBtn(Icons.contact_phone_rounded, AppPrefs.tr('دليل الدفعة', 'Directory'), () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
-                }, cardBg, accent),
-                _topActionBtn(Icons.search_rounded, AppPrefs.tr('بحث', 'Search'), () => _openGlobalSearch(), cardBg, accent),
-                _topActionBtn(Icons.notifications_active_rounded, AppPrefs.tr('الإشعارات', 'Alerts'), () => _openNotifications(), cardBg, accent, badge: _notifications.length),
-                _topActionBtn(
-                  _isSyncing ? Icons.hourglass_top_rounded : Icons.sync_rounded,
-                  AppPrefs.tr('مزامنة', 'Sync'),
-                  () => _syncWithCloud(silent: false),
-                  cardBg,
-                  accent,
-                ),
-                _topActionBtn(Icons.chat_bubble_outline_rounded, AppPrefs.tr('الدردشة', 'Chat'), () => _openBatchChat(), cardBg, accent),
-                _topActionBtn(Icons.settings_rounded, AppPrefs.tr('الإعدادات', 'Settings'), () => _openGeneralSettings(), cardBg, accent),
-              ],
+
+          const SizedBox(height: 14),
+
+          InkWell(
+            onTap: _openGlobalSearch,
+            borderRadius: BorderRadius.circular(30),
+            child: Container(
+              height: 44,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1F272E) : Colors.black.withOpacity(0.06),
+                borderRadius: BorderRadius.circular(30),
+                border: Border.all(color: Colors.grey.withOpacity(0.16)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.search_rounded, size: 21, color: Colors.grey.shade400),
+                  const SizedBox(width: 10),
+                  Text(
+                    AppPrefs.tr('بحث...', 'Search...'),
+                    style: TextStyle(fontSize: 14, color: Colors.grey.shade400),
+                  ),
+                ],
+              ),
             ),
           ),
+
           const SizedBox(height: 14),
 
           if (AppPrefs.showAnnouncements) ...[
@@ -609,6 +1100,54 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _miniHeaderBtn({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+    required Color cardBg,
+    required Color accent,
+    int badge = 0,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: cardBg,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.grey.withOpacity(0.22)),
+              ),
+              child: Icon(icon, size: 19, color: accent),
+            ),
+            if (badge > 0)
+              Positioned(
+                top: -3,
+                left: -3,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: Colors.redAccent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$badge',
+                    style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _openFastRadarAttendance() {
     final cardBg = Theme.of(context).cardColor;
     showModalBottomSheet(
@@ -663,14 +1202,16 @@ class _HomeScreenState extends State<HomeScreen> {
         alignment: Alignment.centerRight,
         child: ActionChip(
           avatar: Icon(Icons.campaign_rounded, size: 16, color: accent),
-          label: Text(AppPrefs.tr('إظهار الإعلانات (${_announcements.length})', 'Show Announcements (${_announcements.length})'), style: const TextStyle(fontSize: 12)),
+          label: Text(AppPrefs.tr('إظهار الإعلانات والتصويت (${_announcements.length})', 'Show Announcements (${_announcements.length})'), style: const TextStyle(fontSize: 12)),
           onPressed: () => setState(() => _bannerDismissed = false),
         ),
       );
     }
 
+    final hasAnyPoll = _announcements.any((e) => (e['poll_options'] is List) && (e['poll_options'] as List).isNotEmpty);
+
     return SizedBox(
-      height: 155,
+      height: hasAnyPoll ? 205 : 155,
       child: Stack(
         children: [
           ClipRRect(
@@ -680,7 +1221,101 @@ class _HomeScreenState extends State<HomeScreen> {
               itemCount: _announcements.length,
               onPageChanged: (idx) => setState(() => _currentBannerPage = idx),
               itemBuilder: (_, idx) {
-                final item = _announcements[idx];
+                final item = Map<String, dynamic>.from(_announcements[idx]);
+                final List<dynamic> pollOptions = (item['poll_options'] is List) ? item['poll_options'] : [];
+
+                if (pollOptions.isNotEmpty) {
+                  final Map<String, dynamic> votes = Map<String, dynamic>.from(
+                    item['poll_votes'] is Map ? item['poll_votes'] : {},
+                  );
+                  final int totalVotes = votes.length;
+                  final int? myVoteIdx = votes[_studentId] is int ? votes[_studentId] : int.tryParse('${votes[_studentId]}');
+
+                  return Container(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 22),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        begin: Alignment.topRight,
+                        end: Alignment.bottomLeft,
+                        colors: [Color(0xFF0F172A), Color(0xFF134E4A)],
+                      ),
+                      borderRadius: BorderRadius.circular(radius),
+                      border: Border.all(color: accent.withOpacity(0.5)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.poll_rounded, color: accent, size: 18),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                item['title'] ?? '',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.5),
+                              ),
+                            ),
+                            const SizedBox(width: 24),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Expanded(
+                          child: ListView.builder(
+                            padding: EdgeInsets.zero,
+                            itemCount: pollOptions.length,
+                            itemBuilder: (_, optIdx) {
+                              final optText = pollOptions[optIdx].toString();
+                              final countForOpt = votes.values.where((v) => v.toString() == optIdx.toString()).length;
+                              final pct = totalVotes == 0 ? 0.0 : countForOpt / totalVotes;
+                              final isSelected = myVoteIdx == optIdx;
+
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 5),
+                                child: InkWell(
+                                  onTap: () => _voteOnAnnouncementPoll(item, optIdx),
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: isSelected ? accent.withOpacity(0.28) : Colors.white.withOpacity(0.08),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: isSelected ? accent : Colors.white24),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Icon(
+                                          isSelected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                                          size: 15,
+                                          color: isSelected ? accent : Colors.white70,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            optText,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                        Text(
+                                          '${(pct * 100).round()}% ($countForOpt)',
+                                          style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
                 final imgUrl = (item['image_url'] ?? '').toString();
                 final title = (item['title'] ?? '').toString();
 
@@ -842,139 +1477,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openSupportContactsSheet() {
-    final cardBg = Theme.of(context).cardColor;
-    final accent = Theme.of(context).colorScheme.primary;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: cardBg,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.65,
-        maxChildSize: 0.9,
-        minChildSize: 0.4,
-        expand: false,
-        builder: (_, scrollCtrl) => FutureBuilder(
-          future: Supabase.instance.client
-              .from('support_contacts')
-              .select()
-              .eq('is_active', true)
-              .order('sort_order'),
-          builder: (context, snapshot) {
-            final contacts = (snapshot.data as List<dynamic>?) ?? [];
-            final amISupport = _isAdmin || contacts.any((c) => c['student_id'].toString() == _studentId);
-
-            return ListView(
-              controller: scrollCtrl,
-              padding: const EdgeInsets.all(20),
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.support_agent_rounded, color: accent, size: 26),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        AppPrefs.tr('التواصل المباشر مع المطورين والمناديب', 'Direct Support & Developers'),
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  AppPrefs.tr(
-                    'اختر الشخص المناسب لبدء محادثة خاصة مباشرة داخل التطبيق لطرح استفسارك أو اقتراحك:',
-                    'Select a contact to start a private in-app chat:',
-                  ),
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-                if (amISupport) ...[
-                  const SizedBox(height: 14),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: accent,
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    icon: const Icon(Icons.inbox_rounded),
-                    label: Text(AppPrefs.tr('صندوق رسائل الطلاب الواردة (للمطورين والمناديب)', 'Incoming Student Messages'), style: const TextStyle(fontWeight: FontWeight.bold)),
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => SupportInboxScreen(myId: _studentId, myName: _studentName, isAdmin: _isAdmin),
-                        ),
-                      );
-                    },
-                  ),
-                ],
-                const SizedBox(height: 16),
-                if (snapshot.connectionState == ConnectionState.waiting)
-                  const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
-                else if (contacts.isEmpty)
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(
-                        AppPrefs.tr('لم يتم إضافة جهات تواصل بعد من لوحة الإدارة.', 'No support contacts added yet.'),
-                        style: const TextStyle(color: Colors.grey),
-                      ),
-                    ),
-                  )
-                else
-                  ...contacts.map((c) {
-                    final targetId = (c['student_id'] ?? '').toString();
-                    final name = (c['display_name'] ?? '').toString();
-                    final role = (c['role_title'] ?? '').toString();
-
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 10),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: accent.withOpacity(0.2),
-                          child: Icon(Icons.person_rounded, color: accent),
-                        ),
-                        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                        subtitle: Text(role, style: TextStyle(color: accent, fontSize: 12)),
-                        trailing: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: accent.withOpacity(0.18),
-                            foregroundColor: accent,
-                            elevation: 0,
-                          ),
-                          icon: const Icon(Icons.chat_rounded, size: 16),
-                          label: Text(AppPrefs.tr('مراسلة', 'Chat'), style: const TextStyle(fontWeight: FontWeight.bold)),
-                          onPressed: () {
-                            Navigator.pop(ctx);
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => DirectSupportChatScreen(
-                                  myId: _studentId,
-                                  myName: _studentName,
-                                  peerId: targetId,
-                                  peerName: name,
-                                  peerRole: role,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    );
-                  }),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-
   void _showMyAttendanceDetails() {
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
@@ -1008,7 +1510,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Center(
                   child: Text(
                     AppPrefs.tr(
-                      'لم يتم تسجيل أي حضور لك بعد. استخدم التحضير الفوري بالرادار أو اعرض كود QR للمندوب.',
+                      'لم يتم تسجيل أي حضور لك بعد. استخدم رادار التحضير أو اعرض كود QR للمندوب.',
                       'No attendance recorded yet.',
                     ),
                     textAlign: TextAlign.center,
@@ -1028,50 +1530,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _topActionBtn(IconData icon, String label, VoidCallback onTap, Color cardBg, Color accent, {int badge = 0}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 5),
-      child: Tooltip(
-        message: label,
-        child: InkWell(
-          onTap: onTap,
-          customBorder: const CircleBorder(),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: cardBg,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.grey.withOpacity(0.22)),
-                ),
-                child: Icon(icon, size: 20, color: accent),
-              ),
-              if (badge > 0)
-                Positioned(
-                  top: -3,
-                  left: -3,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '$badge',
-                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
-                    ),
-                  ),
-                ),
-            ],
-          ),
         ),
       ),
     );
@@ -1345,6 +1803,26 @@ class _HomeScreenState extends State<HomeScreen> {
               body: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ListTile(
+                      leading: Icon(Icons.system_update_rounded, color: accent),
+                      title: Text(AppPrefs.tr('تحديث البرنامج', 'Software Update'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text('${AppPrefs.tr('الإصدار الحالي:', 'Current version:')} $currentAppVersion', style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () {
+                        Navigator.push(
+                          ctx,
+                          MaterialPageRoute(
+                            builder: (_) => const SoftwareUpdateScreen(currentVersion: currentAppVersion),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
                   FutureBuilder<SharedPreferences>(
                     future: SharedPreferences.getInstance(),
                     builder: (context, snap) {
@@ -1825,7 +2303,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
-                          title: Text(AppPrefs.tr('إظهار شريط الإعلانات في الرئيسية', 'Show Announcements Banner')),
+                          title: Text(AppPrefs.tr('إظهار شريط الإعلانات والتصويت في الرئيسية', 'Show Announcements Banner')),
                           value: AppPrefs.showAnnouncements,
                           onChanged: (v) async {
                             await AppPrefs.setTogglePref('show_announcements', v);
@@ -1966,33 +2444,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 10),
-
-                  Card(
-                    color: cardBg,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    child: Column(
-                      children: [
-                        ListTile(
-                          leading: const Icon(Icons.sync, color: Colors.teal),
-                          title: Text(AppPrefs.tr('مزامنة وتحديث البيانات الآن', 'Sync Data Now')),
-                          onTap: () {
-                            Navigator.pop(context);
-                            _syncWithCloud(silent: false);
-                          },
-                        ),
-                        if (_isAdmin) ...[
-                          const Divider(height: 1),
-                          ListTile(
-                            leading: const Icon(Icons.admin_panel_settings, color: Colors.orange),
-                            title: Text(AppPrefs.tr('لوحة إدارة الدفعة (للمشرفين فقط)', 'Admin Dashboard (Admins Only)')),
-                            subtitle: Text(AppPrefs.tr('إدارة الإعلانات، التواصل، الإشعارات، الملفات، كشوفات الحضور', 'Announcements, support, alerts, files, attendance')),
-                            onTap: () => _promptAdminPassword(),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
                 ],
               ),
             );
@@ -2092,6 +2543,631 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+class SoftwareUpdateScreen extends StatefulWidget {
+  final String currentVersion;
+  const SoftwareUpdateScreen({super.key, required this.currentVersion});
+
+  @override
+  State<SoftwareUpdateScreen> createState() => _SoftwareUpdateScreenState();
+}
+
+class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
+  bool _checking = false;
+  bool _autoWifi = true;
+  String _lastChecked = '';
+  String _latestVersion = '';
+  String _updateUrl = '';
+  String _updateNotes = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _latestVersion = widget.currentVersion;
+    _loadPrefsAndCheck();
+  }
+
+  Future<void> _loadPrefsAndCheck() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _autoWifi = prefs.getBool('update_auto_wifi') ?? true;
+      _lastChecked = prefs.getString('update_last_checked') ?? '';
+    });
+    await _checkForUpdate();
+  }
+
+  int _compareVersions(String v1, String v2) {
+    final p1 = v1.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final p2 = v2.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    for (int i = 0; i < 3; i++) {
+      final a = i < p1.length ? p1[i] : 0;
+      final b = i < p2.length ? p2[i] : 0;
+      if (a > b) return 1;
+      if (a < b) return -1;
+    }
+    return 0;
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    try {
+      final rows = await Supabase.instance.client
+          .from('app_settings')
+          .select('key, value')
+          .inFilter('key', ['latest_version', 'update_url', 'update_notes']);
+
+      String latest = widget.currentVersion;
+      String url = 'https://github.com/780ramialhakami780-jpg/IQ_Pharmacy39/releases/latest/download/IQ_Pharmacy39.apk';
+      String notes = '';
+
+      for (final r in rows) {
+        final k = (r['key'] ?? '').toString();
+        final v = (r['value'] ?? '').toString().trim();
+        if (k == 'latest_version' && v.isNotEmpty) latest = v;
+        if (k == 'update_url' && v.isNotEmpty) url = v;
+        if (k == 'update_notes' && v.isNotEmpty) notes = v;
+      }
+
+      final now = DateTime.now();
+      final stamp = '${now.year}/${now.month}/${now.day} • ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('update_last_checked', stamp);
+
+      if (!mounted) return;
+      setState(() {
+        _latestVersion = latest;
+        _updateUrl = url;
+        _updateNotes = notes;
+        _lastChecked = stamp;
+        _checking = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+    final hasNewer = _compareVersions(_latestVersion, widget.currentVersion) > 0;
+
+    return Scaffold(
+      appBar: AppBar(title: Text(AppPrefs.tr('تحديث البرنامج', 'Software Update'))),
+      body: _checking
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: accent),
+                  const SizedBox(height: 18),
+                  Text(
+                    AppPrefs.tr('يتم البحث عن تحديثات...', 'Checking for updates...'),
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                    leading: Icon(
+                      hasNewer ? Icons.system_update_alt_rounded : Icons.verified_rounded,
+                      color: hasNewer ? accent : Colors.green,
+                      size: 30,
+                    ),
+                    title: Text(
+                      hasNewer
+                          ? AppPrefs.tr('يتوفر تحديث جديد ($_latestVersion)', 'Update available ($_latestVersion)')
+                          : AppPrefs.tr('برنامجك محدّث.', 'Your software is up to date.'),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    ),
+                    subtitle: Text(
+                      _lastChecked.isNotEmpty
+                          ? '${AppPrefs.tr('آخر فحص:', 'Last checked:')} $_lastChecked'
+                          : AppPrefs.tr('اضغط للفحص اليدوي', 'Tap to check manually'),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    onTap: _checkForUpdate,
+                  ),
+                ),
+                if (hasNewer) ...[
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                      icon: const Icon(Icons.download_rounded),
+                      label: Text(AppPrefs.tr('تنزيل وتثبيت التحديث الآن', 'Download and install'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        final uri = Uri.tryParse(_updateUrl);
+                        if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
+                      },
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                  child: SwitchListTile(
+                    title: Text(AppPrefs.tr('التنزيل التلقائي عبر Wi-Fi', 'Auto download over Wi-Fi'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(
+                      AppPrefs.tr('البحث عن التحديثات تلقائياً عند الاتصال بشبكة Wi-Fi', 'Check updates automatically on Wi-Fi'),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    value: _autoWifi,
+                    activeColor: accent,
+                    onChanged: (v) async {
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setBool('update_auto_wifi', v);
+                      setState(() => _autoWifi = v);
+                    },
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(18),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(AppPrefs.tr('تحديث المعلومات', 'Update information'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accent)),
+                        const SizedBox(height: 10),
+                        Text('• ${AppPrefs.tr('إصدار التطبيق الحالي:', 'Current version:')} ${widget.currentVersion}'),
+                        const SizedBox(height: 4),
+                        Text('• ${AppPrefs.tr('أحدث إصدار على الخادم:', 'Latest server version:')} $_latestVersion'),
+                        if (_updateNotes.isNotEmpty) ...[
+                          const Divider(height: 20),
+                          Text(AppPrefs.tr('ما الجديد في هذا الإصدار:', 'What is new:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                          const SizedBox(height: 6),
+                          Text(_updateNotes, style: const TextStyle(fontSize: 13, height: 1.5, color: Colors.grey)),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class ClinicalPharmacistBagScreen extends StatefulWidget {
+  const ClinicalPharmacistBagScreen({super.key});
+
+  @override
+  State<ClinicalPharmacistBagScreen> createState() => _ClinicalPharmacistBagScreenState();
+}
+
+class _ClinicalPharmacistBagScreenState extends State<ClinicalPharmacistBagScreen> {
+  final _ageCtrl = TextEditingController();
+  final _weightCtrl = TextEditingController();
+  final _scrCtrl = TextEditingController();
+  bool _isFemale = false;
+  double? _crclResult;
+
+  final _pedWeightCtrl = TextEditingController();
+  final _pedDosePerKgCtrl = TextEditingController();
+  final _pedFreqCtrl = TextEditingController(text: '3');
+  double? _pedTotalDaily;
+  double? _pedSingleDose;
+
+  @override
+  void dispose() {
+    _ageCtrl.dispose();
+    _weightCtrl.dispose();
+    _scrCtrl.dispose();
+    _pedWeightCtrl.dispose();
+    _pedDosePerKgCtrl.dispose();
+    _pedFreqCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+
+    return DefaultTabController(
+      length: 3,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(AppPrefs.tr('حقيبة الصيدلي الإكلينيكي', 'Clinical Pharmacist Kit')),
+          bottom: TabBar(
+            indicatorColor: accent,
+            tabs: [
+              Tab(text: AppPrefs.tr('تصفية الكرياتينين', 'CrCl Calc')),
+              Tab(text: AppPrefs.tr('جرعات الأطفال', 'Pediatric Dose')),
+              Tab(text: AppPrefs.tr('القيم المخبرية', 'Lab Values')),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Cockcroft-Gault Equation (CrCl)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accent)),
+                        const SizedBox(height: 12),
+                        TextField(controller: _ageCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'العمر (سنة)', border: OutlineInputBorder())),
+                        const SizedBox(height: 10),
+                        TextField(controller: _weightCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'الوزن (kg)', border: OutlineInputBorder())),
+                        const SizedBox(height: 10),
+                        TextField(controller: _scrCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Serum Creatinine (mg/dL)', border: OutlineInputBorder())),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('أنثى (Female × 0.85)'),
+                          value: _isFemale,
+                          onChanged: (v) => setState(() => _isFemale = v),
+                        ),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                            onPressed: () {
+                              final age = double.tryParse(_ageCtrl.text.trim());
+                              final wt = double.tryParse(_weightCtrl.text.trim());
+                              final scr = double.tryParse(_scrCtrl.text.trim());
+                              if (age != null && wt != null && scr != null && scr > 0) {
+                                double val = ((140 - age) * wt) / (72 * scr);
+                                if (_isFemale) val *= 0.85;
+                                setState(() => _crclResult = val);
+                              }
+                            },
+                            child: const Text('حساب تصفية الكرياتينين', style: TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        if (_crclResult != null) ...[
+                          const SizedBox(height: 16),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(color: accent.withOpacity(0.15), borderRadius: BorderRadius.circular(12)),
+                            child: Text(
+                              'CrCl = ${_crclResult!.toStringAsFixed(1)} mL/min',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: accent),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('حاسبة جرعات الأطفال حسب الوزن', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accent)),
+                        const SizedBox(height: 12),
+                        TextField(controller: _pedWeightCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'وزن الطفل (kg)', border: OutlineInputBorder())),
+                        const SizedBox(height: 10),
+                        TextField(controller: _pedDosePerKgCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'الجرعة اليومية (mg/kg/day)', border: OutlineInputBorder())),
+                        const SizedBox(height: 10),
+                        TextField(controller: _pedFreqCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'عدد الجرعات في اليوم (مثلاً: 3)', border: OutlineInputBorder())),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                            onPressed: () {
+                              final wt = double.tryParse(_pedWeightCtrl.text.trim());
+                              final dose = double.tryParse(_pedDosePerKgCtrl.text.trim());
+                              final freq = int.tryParse(_pedFreqCtrl.text.trim()) ?? 1;
+                              if (wt != null && dose != null && freq > 0) {
+                                final total = wt * dose;
+                                setState(() {
+                                  _pedTotalDaily = total;
+                                  _pedSingleDose = total / freq;
+                                });
+                              }
+                            },
+                            child: const Text('حساب الجرعة', style: TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        if (_pedTotalDaily != null && _pedSingleDose != null) ...[
+                          const SizedBox(height: 16),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(color: accent.withOpacity(0.15), borderRadius: BorderRadius.circular(12)),
+                            child: Column(
+                              children: [
+                                Text('الجرعة اليومية الكلية: ${_pedTotalDaily!.toStringAsFixed(1)} mg/day', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 6),
+                                Text('الجرعة الواحدة: ${_pedSingleDose!.toStringAsFixed(1)} mg', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: accent)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _labTile(cardBg, accent, 'Sodium (Na+)', '135 – 145 mEq/L'),
+                _labTile(cardBg, accent, 'Potassium (K+)', '3.5 – 5.0 mEq/L'),
+                _labTile(cardBg, accent, 'Serum Creatinine (SCr)', '0.6 – 1.2 mg/dL'),
+                _labTile(cardBg, accent, 'BUN', '7 – 20 mg/dL'),
+                _labTile(cardBg, accent, 'Fasting Blood Glucose', '70 – 100 mg/dL'),
+                _labTile(cardBg, accent, 'HbA1c (Normal)', 'Less than 5.7%'),
+                _labTile(cardBg, accent, 'Hemoglobin (Hb)', 'Male: 13.5–17.5 | Female: 12.0–16.0 g/dL'),
+                _labTile(cardBg, accent, 'WBC Count', '4,500 – 11,000 /µL'),
+                _labTile(cardBg, accent, 'Platelets', '150,000 – 450,000 /µL'),
+                _labTile(cardBg, accent, 'INR (Normal / Warfarin)', 'Normal: 0.8–1.1 | Therapeutic: 2.0–3.0'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _labTile(Color cardBg, Color accent, String name, String range) {
+    return Card(
+      color: cardBg,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        title: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+        trailing: Text(range, style: TextStyle(color: accent, fontWeight: FontWeight.bold, fontSize: 12.5)),
+      ),
+    );
+  }
+}
+
+class ExamNightReviewScreen extends StatefulWidget {
+  final List<dynamic> subjects;
+  final List<dynamic> references;
+  const ExamNightReviewScreen({super.key, required this.subjects, required this.references});
+
+  @override
+  State<ExamNightReviewScreen> createState() => _ExamNightReviewScreenState();
+}
+
+class _ExamNightReviewScreenState extends State<ExamNightReviewScreen> {
+  List<Map<String, dynamic>> _favQuestions = [];
+  List<Map<String, dynamic>> _favMaterials = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFavorites();
+  }
+
+  Future<void> _loadFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<Map<String, dynamic>> qOut = [];
+    final List<Map<String, dynamic>> mOut = [];
+
+    for (final s in widget.subjects) {
+      final sid = s['id'];
+      final sname = (s['name'] ?? '').toString();
+      final favQ = (prefs.getStringList('fav_q_$sid') ?? []).toSet();
+      final favM = (prefs.getStringList('fav_m_$sid') ?? []).toSet();
+
+      if (favQ.isNotEmpty) {
+        final rawQ = prefs.getString('cache_questions_$sid');
+        if (rawQ != null) {
+          final List<dynamic> listQ = jsonDecode(rawQ);
+          for (final q in listQ) {
+            if (favQ.contains(q['id'].toString())) {
+              qOut.add({...Map<String, dynamic>.from(q), '_subjName': sname});
+            }
+          }
+        }
+      }
+      if (favM.isNotEmpty) {
+        final rawM = prefs.getString('cache_materials_$sid');
+        if (rawM != null) {
+          final List<dynamic> listM = jsonDecode(rawM);
+          for (final m in listM) {
+            if (favM.contains(m['id'].toString())) {
+              mOut.add({...Map<String, dynamic>.from(m), '_subjName': sname});
+            }
+          }
+        }
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _favQuestions = qOut;
+      _favMaterials = mOut;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+
+    return DefaultTabController(
+      length: 3,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(AppPrefs.tr('حقيبة المراجعة ليلة الامتحان', 'Exam Night Review Bag')),
+          bottom: TabBar(
+            indicatorColor: accent,
+            tabs: [
+              Tab(text: AppPrefs.tr('مرجع المواد', 'Subject Refs')),
+              Tab(text: '${AppPrefs.tr('أسئلة مفضلة', 'Questions')} (${_favQuestions.length})'),
+              Tab(text: '${AppPrefs.tr('ملفات مفضلة', 'Files')} (${_favMaterials.length})'),
+            ],
+          ),
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+                children: [
+                  ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: widget.subjects.length,
+                    itemBuilder: (_, idx) {
+                      final subj = widget.subjects[idx];
+                      final sid = subj['id'];
+                      final subjRefs = widget.references.where((r) => r['subject_id'] == sid).toList();
+
+                      return Card(
+                        color: cardBg,
+                        margin: const EdgeInsets.only(bottom: 10),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        child: ExpansionTile(
+                          leading: Icon(Icons.menu_book_rounded, color: accent),
+                          title: Text(subj['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: Text(
+                            subjRefs.isEmpty
+                                ? AppPrefs.tr('لا توجد بطاقات مرجعية مضافة بعد', 'No reference cards yet')
+                                : '${subjRefs.length} ${AppPrefs.tr('بطاقة مراجعة مركزة', 'reference cards')}',
+                            style: const TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
+                          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                          children: subjRefs.isEmpty
+                              ? [
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 8),
+                                    child: Text(
+                                      AppPrefs.tr('سيتم عرض ملخصات وقوانين هذه المادة هنا فور إضافتها من الإدارة.', 'Reference cards will appear here once added.'),
+                                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                    ),
+                                  )
+                                ]
+                              : subjRefs.map((ref) {
+                                  return Container(
+                                    width: double.infinity,
+                                    margin: const EdgeInsets.only(top: 8),
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: accent.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(color: accent.withOpacity(0.3)),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(ref['title'] ?? '', style: TextStyle(fontWeight: FontWeight.bold, color: accent, fontSize: 14)),
+                                        const SizedBox(height: 6),
+                                        Text(ref['content'] ?? '', style: const TextStyle(fontSize: 13, height: 1.5)),
+                                      ],
+                                    ),
+                                  );
+                                }).toList(),
+                        ),
+                      );
+                    },
+                  ),
+
+                  _favQuestions.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              AppPrefs.tr('اضغط على علامة النجمة ⭐ بجانب أي سؤال صعب في بنك الأسئلة ليظهر هنا ليلة الامتحان.', 'Tap ⭐ next to any question to save it here.'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: _favQuestions.length,
+                          itemBuilder: (_, idx) {
+                            final q = _favQuestions[idx];
+                            final List<dynamic> opts = q['options'] is String ? jsonDecode(q['options']) : (q['options'] ?? []);
+                            final int cIdx = q['correct_index'] ?? 0;
+                            final answerText = (cIdx >= 0 && cIdx < opts.length) ? opts[cIdx].toString() : '';
+                            return Card(
+                              color: cardBg,
+                              margin: const EdgeInsets.only(bottom: 12),
+                              child: Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(q['_subjName'] ?? '', style: TextStyle(fontSize: 11, color: accent, fontWeight: FontWeight.bold)),
+                                    const SizedBox(height: 4),
+                                    Text(q['question_text'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                    const SizedBox(height: 8),
+                                    Text('✅ $answerText', style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, fontSize: 13)),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+
+                  _favMaterials.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                              AppPrefs.tr('اضغط على علامة النجمة ⭐ بجانب أي ملف مهم داخل المواد ليظهر هنا للمراجعة السريعة.', 'Tap ⭐ next to any important file to save it here.'),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: _favMaterials.length,
+                          itemBuilder: (_, idx) {
+                            final m = _favMaterials[idx];
+                            return Card(
+                              color: cardBg,
+                              margin: const EdgeInsets.only(bottom: 10),
+                              child: ListTile(
+                                leading: const Icon(Icons.star_rounded, color: Colors.amber),
+                                title: Text(m['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                subtitle: Text('${m['_subjName']} • المحاضرة ${m['lecture_number']}'),
+                                trailing: const Icon(Icons.open_in_new_rounded),
+                                onTap: () {
+                                  final uri = Uri.tryParse((m['file_url'] ?? '').toString());
+                                  if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
 class AppGlobalSearchDelegate extends SearchDelegate {
   final List<dynamic> subjects;
   final List<dynamic> schedule;
@@ -2164,7 +3240,6 @@ class AppGlobalSearchDelegate extends SearchDelegate {
   }
 }
 
-/// دردشة الدفعة الشبيهة بالواتساب (ردود مقتبسة، تفاعلات، حذف، وقت الرسالة، وزر البلوتوث الأوفلاين)
 class BatchChatScreen extends StatefulWidget {
   final String studentId;
   final String defaultName;
@@ -2353,7 +3428,6 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     try {
       await Supabase.instance.client.from('chat_messages').insert(payload);
     } catch (_) {
-      // في حال عدم تشغيل كود SQL الإضافي بعد، أرسل الرسالة الأساسية
       await Supabase.instance.client.from('chat_messages').insert({
         'student_id': widget.studentId,
         'nickname': _nickname,
