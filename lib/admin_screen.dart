@@ -762,7 +762,7 @@ class _AdminScreenState extends State<AdminScreen> {
                       SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'رادار التحضير السريع (نظري + مجموعات العملي)',
+                          'رادار التحضير السريع (نظري + مجموعات العملي A-D)',
                           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
                         ),
                       ),
@@ -770,7 +770,7 @@ class _AdminScreenState extends State<AdminScreen> {
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    'التقط حضور القاعة أو مجموعة العملي في ثوانٍ عبر البلوتوث أو الكود المتغير كل 30 ثانية بدون إنترنت.',
+                    'التقط حضور القاعة أو مجموعة العملي في ثوانٍ عبر البلوتوث أو الكود المتغير كل 10 ثوانٍ بدون إنترنت.',
                     style: TextStyle(fontSize: 12, color: Colors.white70),
                   ),
                   const SizedBox(height: 10),
@@ -914,6 +914,58 @@ class _AdminScreenState extends State<AdminScreen> {
       builder: (context, setInnerState) => ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          const Text('🎨 شعار الترويسة المطبوع في وسط الشاشة الرئيسية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+          const SizedBox(height: 6),
+          const Text('ارفع صورة PNG شفافة الخلفية وسيظهر الشعار كأنه مطبوع مباشرة في ترويسة التطبيق لجميع الطلاب فوراً.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black, padding: const EdgeInsets.symmetric(vertical: 14)),
+                  icon: const Icon(Icons.upload_file_rounded),
+                  label: const Text('اختيار ورفع شعار جديد (PNG شفاف)', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () async {
+                    final picker = ImagePicker();
+                    final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 90);
+                    if (picked == null) return;
+                    setState(() => _isLoading = true);
+                    try {
+                      final bytes = await picked.readAsBytes();
+                      final ext = picked.name.split('.').last;
+                      final fileName = 'header_logo_${DateTime.now().millisecondsSinceEpoch}.$ext';
+                      await _client.storage.from('announcements').uploadBinary(fileName, bytes);
+                      final publicUrl = _client.storage.from('announcements').getPublicUrl(fileName);
+                      await _client.from('app_settings').upsert({'key': 'header_logo_url', 'value': publicUrl});
+                      _showMsg('تم تحديث شعار الترويسة بنجاح وسيظهر للجميع عند فتح التطبيق ✓');
+                    } catch (_) {
+                      _showMsg('تعذر رفع الشعار، تأكد من اتصال الإنترنت', isError: true);
+                    } finally {
+                      if (mounted) setState(() => _isLoading = false);
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12)),
+                icon: const Icon(Icons.restore_rounded, color: Colors.orange),
+                label: const Text('افتراضي'),
+                onPressed: () async {
+                  setState(() => _isLoading = true);
+                  try {
+                    await _client.from('app_settings').upsert({'key': 'header_logo_url', 'value': ''});
+                    _showMsg('تمت استعادة الشعار الافتراضي للتطبيق');
+                  } catch (_) {
+                    _showMsg('فشلت الاستعادة', isError: true);
+                  } finally {
+                    if (mounted) setState(() => _isLoading = false);
+                  }
+                },
+              ),
+            ],
+          ),
+          const Divider(height: 36),
           const Text('🚀 إدارة تحديثات البرنامج (تحديث البرنامج في الإعدادات)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
           const SizedBox(height: 6),
           const Text('حدّد رقم الإصدار الجديد ليظهر للطلاب في شاشة تحديث البرنامج أو لفرض التحديث الإجباري.', style: TextStyle(fontSize: 12, color: Colors.grey)),

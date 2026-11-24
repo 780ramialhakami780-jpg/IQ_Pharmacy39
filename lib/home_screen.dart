@@ -43,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isAdmin = false;
   bool _isSyncing = false;
   String _urgentBanner = '';
+  String _headerLogoUrl = '';
   Map<String, String> _calendarOccasions = {};
 
   List<dynamic> _subjects = [];
@@ -155,6 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _lastSyncText = prefs.getString('last_sync_time') ?? '';
       _isAdmin = prefs.getBool('is_admin') ?? false;
       _urgentBanner = prefs.getString('cache_urgent_banner') ?? '';
+      _headerLogoUrl = prefs.getString('cache_header_logo_url') ?? '';
       _calendarOccasions = occMap;
 
       _subjects = jsonDecode(prefs.getString('cache_subjects') ?? '[]');
@@ -206,16 +208,18 @@ class _HomeScreenState extends State<HomeScreen> {
       } catch (_) {}
 
       String bannerText = '';
+      String logoUrl = _headerLogoUrl;
       Map<String, String> occMap = _calendarOccasions;
       try {
         final settingsRows = await client
             .from('app_settings')
             .select('key, value')
-            .inFilter('key', ['urgent_banner', 'calendar_occasions']);
+            .inFilter('key', ['urgent_banner', 'calendar_occasions', 'header_logo_url']);
         for (final row in settingsRows) {
           final k = (row['key'] ?? '').toString();
           final v = (row['value'] ?? '').toString().trim();
           if (k == 'urgent_banner') bannerText = v;
+          if (k == 'header_logo_url') logoUrl = v;
           if (k == 'calendar_occasions' && v.isNotEmpty) {
             occMap = Map<String, String>.from(jsonDecode(v));
           }
@@ -275,6 +279,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await prefs.setString('profile_avatar_url', cloudAvatar);
       await prefs.setString('last_sync_time', syncStamp);
       await prefs.setString('cache_urgent_banner', bannerText);
+      await prefs.setString('cache_header_logo_url', logoUrl);
       await prefs.setString('cache_calendar_occasions', jsonEncode(occMap));
       await prefs.setString('cache_subjects', jsonEncode(subjectsData));
       await prefs.setString('cache_schedule', jsonEncode(scheduleData));
@@ -291,6 +296,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _profileAvatarUrl = cloudAvatar;
         _lastSyncText = syncStamp;
         _urgentBanner = bannerText;
+        _headerLogoUrl = logoUrl;
         _calendarOccasions = occMap;
         _subjects = subjectsData;
         _schedule = scheduleData;
@@ -843,28 +849,24 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// بناء شعار التطبيق الرسمي في وسط الترويسة بدون خلفية
+  /// بناء شعار التطبيق في وسط الترويسة كأنه مطبوع مباشرة بلا إطار أو خلفية دائرية
   Widget _buildCenterAppLogo(Color accent) {
-    return ClipOval(
-      child: Image.asset(
+    Widget fallbackAsset() {
+      return Image.asset(
         'assets/logo.png',
-        width: 44,
-        height: 44,
+        height: 46,
         fit: BoxFit.contain,
         errorBuilder: (_, __, ___) => Image.asset(
-          'assets/icon.png',
-          width: 44,
-          height: 44,
+          'logo.png',
+          height: 46,
           fit: BoxFit.contain,
           errorBuilder: (_, __, ___) => Image.asset(
-            'logo.png',
-            width: 44,
-            height: 44,
+            'assets/icon.png',
+            height: 46,
             fit: BoxFit.contain,
             errorBuilder: (_, __, ___) => Image.asset(
               'icon.png',
-              width: 44,
-              height: 44,
+              height: 46,
               fit: BoxFit.contain,
               errorBuilder: (_, __, ___) => Icon(
                 Icons.local_pharmacy_rounded,
@@ -874,8 +876,18 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-      ),
-    );
+      );
+    }
+
+    if (_headerLogoUrl.isNotEmpty) {
+      return Image.network(
+        _headerLogoUrl,
+        height: 46,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => fallbackAsset(),
+      );
+    }
+    return fallbackAsset();
   }
 
   Widget _buildDashboardTab(Color cardBg, Color accent) {
