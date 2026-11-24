@@ -15,8 +15,9 @@ typedef BleChatMessage = Map<String, String>;
 
 class RadarCrypto {
   static const int _secretSeed = 3970241;
+  static const int slotDurationMs = 10000; // يتغير الكود كل 10 ثوانٍ
 
-  static int currentSlot() => DateTime.now().millisecondsSinceEpoch ~/ 30000;
+  static int currentSlot() => DateTime.now().millisecondsSinceEpoch ~/ slotDurationMs;
 
   static String generatePinForSlot(String sessionCode, int slot) {
     int hash = _secretSeed ^ (slot * 2654435761);
@@ -35,13 +36,14 @@ class RadarCrypto {
     final clean = inputPin.trim();
     if (clean.length != 4) return false;
     final slot = currentSlot();
+    // يقبل الكود الحالي أو الكود السابق مباشرة (فترة سماح 10 ثوانٍ إضافية أثناء الكتابة)
     return clean == generatePinForSlot(sessionCode, slot) ||
         clean == generatePinForSlot(sessionCode, slot - 1);
   }
 
   static int secondsRemainingInSlot() {
-    final ms = DateTime.now().millisecondsSinceEpoch % 30000;
-    return 30 - (ms ~/ 1000);
+    final ms = DateTime.now().millisecondsSinceEpoch % slotDurationMs;
+    return 10 - (ms ~/ 1000);
   }
 }
 
@@ -93,16 +95,18 @@ class AdminRadarScreen extends StatefulWidget {
 
 class _AdminRadarScreenState extends State<AdminRadarScreen> {
   static const int _attManufacturerId = 0x3939;
+  static const List<String> _practicalGroups = ['مجموعة A', 'مجموعة B', 'مجموعة C', 'مجموعة D'];
+
   final TextEditingController _subjectCtrl = TextEditingController();
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
 
   String _lectureType = 'نظري';
-  String _selectedGroup = 'مجموعة 1';
+  String _selectedGroup = 'مجموعة A';
   int _selectedMinutes = 5;
   bool _isRadarActive = false;
   int _remainingSeconds = 300;
   String _activePin = '----';
-  int _pinSecondsLeft = 30;
+  int _pinSecondsLeft = 10;
   bool _bleAdvertising = false;
 
   Timer? _mainTimer;
@@ -357,15 +361,19 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
                   ),
                   if (_lectureType == 'عملي') ...[
                     const SizedBox(height: 12),
-                    const Text('تحديد مجموعة العملي:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                    const Text('تحديد مجموعة العملي (A - D):', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 8,
-                      children: ['مجموعة 1', 'مجموعة 2', 'مجموعة 3', 'مجموعة 4', 'مجموعة 5'].map((grp) {
-                        return ChoiceChip(
-                          label: Text(grp),
-                          selected: _selectedGroup == grp,
-                          onSelected: _isRadarActive ? null : (_) => setState(() => _selectedGroup = grp),
+                    Row(
+                      children: _practicalGroups.map((grp) {
+                        return Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 3),
+                            child: ChoiceChip(
+                              label: Center(child: Text(grp, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
+                              selected: _selectedGroup == grp,
+                              onSelected: _isRadarActive ? null : (_) => setState(() => _selectedGroup = grp),
+                            ),
+                          ),
                         );
                       }).toList(),
                     ),
@@ -470,7 +478,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
                   ),
                   const Divider(color: Colors.white24, height: 24),
                   const Text(
-                    'الكود السريع المتغيّر كل 30 ثانية (للطلاب يدوياً):',
+                    'الكود السريع المتغيّر كل 10 ثوانٍ (للطلاب يدوياً):',
                     style: TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                   const SizedBox(height: 8),
@@ -485,7 +493,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> {
                   ),
                   const SizedBox(height: 6),
                   LinearProgressIndicator(
-                    value: _pinSecondsLeft / 30.0,
+                    value: _pinSecondsLeft / 10.0,
                     backgroundColor: Colors.white12,
                     color: accent,
                   ),
@@ -548,12 +556,14 @@ class StudentFastAttendanceSheet extends StatefulWidget {
 
 class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet> {
   static const int _attManufacturerId = 0x3939;
+  static const List<String> _practicalGroups = ['مجموعة A', 'مجموعة B', 'مجموعة C', 'مجموعة D'];
+
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
   final TextEditingController _subjectCtrl = TextEditingController();
   final TextEditingController _pinCtrl = TextEditingController();
 
   String _lectureType = 'نظري';
-  String _selectedGroup = 'مجموعة 1';
+  String _selectedGroup = 'مجموعة A';
   bool _broadcasting = false;
   bool _radarNearby = false;
   bool _submitting = false;
@@ -749,13 +759,17 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
             ),
             if (_lectureType == 'عملي') ...[
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                children: ['مجموعة 1', 'مجموعة 2', 'مجموعة 3', 'مجموعة 4', 'مجموعة 5'].map((grp) {
-                  return ChoiceChip(
-                    label: Text(grp, style: const TextStyle(fontSize: 12)),
-                    selected: _selectedGroup == grp,
-                    onSelected: (_) => setState(() => _selectedGroup = grp),
+              Row(
+                children: _practicalGroups.map((grp) {
+                  return Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: ChoiceChip(
+                        label: Center(child: Text(grp, style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold))),
+                        selected: _selectedGroup == grp,
+                        onSelected: (_) => setState(() => _selectedGroup = grp),
+                      ),
+                    ),
                   );
                 }).toList(),
               ),
