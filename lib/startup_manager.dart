@@ -1,12 +1,48 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'app_prefs.dart';
+
+class BiometricHelper {
+  static final LocalAuthentication _auth = LocalAuthentication();
+
+  static Future<bool> isBiometricAvailable() async {
+    if (kIsWeb) return false;
+    try {
+      final canCheck = await _auth.canCheckBiometrics;
+      final isSupported = await _auth.isDeviceSupported();
+      return canCheck || isSupported;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> authenticate({required String reason}) async {
+    if (kIsWeb) return false;
+    try {
+      final available = await isBiometricAvailable();
+      if (!available) return false;
+      return await _auth.authenticate(
+        localizedReason: reason,
+        options: const AuthenticationOptions(
+          stickyAuth: true,
+          biometricOnly: false,
+        ),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+}
 
 class StartupManager {
-  static const int currentBuildNumber = 102;
+  static const int currentBuildNumber = 103;
   static bool _checkedThisSession = false;
+  static bool _appUnlockedThisSession = false;
 
   /// نافذة تأكيد الخروج بتصميم مطابق للصورة ومتناسق مع ثيم التطبيق
   static Future<bool> showExitDialog(BuildContext context) async {
@@ -111,8 +147,139 @@ class StartupManager {
     return false;
   }
 
-  /// فحص التحديث الإجباري والإعلان التلقائي عند فتح التطبيق
+  /// شاشة قفل التطبيق بالبصمة ورمز المرور عند التشغيل
+  static Future<void> verifyAppLockIfNeeded(BuildContext context) async {
+    if (_appUnlockedThisSession) return;
+    if (!AppPrefs.pinEnabled && !AppPrefs.biometricEnabled) {
+      _appUnlockedThisSession = true;
+      return;
+    }
+    if (!context.mounted) return;
+
+    final pinCtrl = TextEditingController();
+    bool errorText = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      barrierColor: Colors.black.withOpacity(0.92),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLockState) {
+          final accent = Theme.of(ctx).colorScheme.primary;
+          final cardBg = Theme.of(ctx).cardColor;
+
+          Future<void> triggerBiometric() async {
+            final ok = await BiometricHelper.authenticate(
+              reason: AppPrefs.tr('استخدم البصمة لفتح تطبيق IQ_Pharmacy39', 'Use biometric to unlock IQ_Pharmacy39'),
+            );
+            if (ok && ctx.mounted) {
+              _appUnlockedThisSession = true;
+              Navigator.of(ctx).pop();
+            }
+          }
+
+          if (AppPrefs.biometricEnabled && !_appUnlockedThisSession) {
+            Future.microtask(() async {
+              if (!_appUnlockedThisSession) {
+                final ok = await BiometricHelper.authenticate(
+                  reason: AppPrefs.tr('استخدم البصمة لفتح تطبيق IQ_Pharmacy39', 'Use biometric to unlock IQ_Pharmacy39'),
+                );
+                if (ok && ctx.mounted) {
+                  _appUnlockedThisSession = true;
+                  Navigator.of(ctx).pop();
+                }
+              }
+            });
+          }
+
+          return PopScope(
+            canPop: false,
+            child: AlertDialog(
+              backgroundColor: cardBg,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Column(
+                children: [
+                  Icon(Icons.lock_rounded, color: accent, size: 38),
+                  const SizedBox(height: 8),
+                  Text(
+                    AppPrefs.tr('التطبيق مقفل', 'App Locked'),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (AppPrefs.pinEnabled && AppPrefs.appPin.isNotEmpty) ...[
+                    Text(
+                      AppPrefs.tr('أدخل رمز المرور (PIN) أو استخدم البصمة:', 'Enter PIN or use biometric:'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: pinCtrl,
+                      keyboardType: TextInputType.number,
+                      obscureText: true,
+                      maxLength: 6,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 22, letterSpacing: 6),
+                      decoration: InputDecoration(
+                        counterText: '',
+                        hintText: '••••',
+                        errorText: errorText ? AppPrefs.tr('الرمز غير صحيح', 'Wrong PIN') : null,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                        onPressed: () {
+                          if (pinCtrl.text.trim() == AppPrefs.appPin) {
+                            _appUnlockedThisSession = true;
+                            Navigator.of(ctx).pop();
+                          } else {
+                            setLockState(() => errorText = true);
+                          }
+                        },
+                        child: Text(AppPrefs.tr('فتح القفل', 'Unlock'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                  if (AppPrefs.biometricEnabled) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          side: BorderSide(color: accent),
+                        ),
+                        icon: Icon(Icons.fingerprint_rounded, color: accent, size: 26),
+                        label: Text(
+                          AppPrefs.tr('فتح بالبصمة', 'Unlock with Fingerprint'),
+                          style: TextStyle(color: accent, fontWeight: FontWeight.bold),
+                        ),
+                        onPressed: triggerBiometric,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// فحص قفل التطبيق والتحديث الإجباري والإعلان التلقائي عند فتح التطبيق
   static Future<void> checkOnStartup(BuildContext context) async {
+    await verifyAppLockIfNeeded(context);
+    if (!context.mounted) return;
+
     if (_checkedThisSession) return;
     _checkedThisSession = true;
 

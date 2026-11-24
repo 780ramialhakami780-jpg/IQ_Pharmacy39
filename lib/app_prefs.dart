@@ -27,6 +27,8 @@ class AppPrefs {
 
   static bool pinEnabled = false;
   static String appPin = '';
+  static bool biometricEnabled = false;
+  static bool adminBiometricEnabled = false;
 
   static bool get isEnglish => localeNotifier.value.languageCode == 'en';
   static bool get isDark => themePreset != 'light';
@@ -64,6 +66,8 @@ class AppPrefs {
 
     pinEnabled = prefs.getBool('pin_enabled') ?? false;
     appPin = prefs.getString('app_pin') ?? '';
+    biometricEnabled = prefs.getBool('biometric_enabled') ?? false;
+    adminBiometricEnabled = prefs.getBool('admin_biometric_enabled') ?? false;
   }
 
   static Future<void> setDark(bool dark) async {
@@ -179,6 +183,24 @@ class AppPrefs {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('pin_enabled', enabled);
     await prefs.setString('app_pin', pin);
+    if (!enabled) {
+      biometricEnabled = false;
+      await prefs.setBool('biometric_enabled', false);
+    }
+    _notify();
+  }
+
+  static Future<void> setBiometricEnabled(bool enabled) async {
+    biometricEnabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('biometric_enabled', enabled);
+    _notify();
+  }
+
+  static Future<void> setAdminBiometricEnabled(bool enabled) async {
+    adminBiometricEnabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('admin_biometric_enabled', enabled);
     _notify();
   }
 

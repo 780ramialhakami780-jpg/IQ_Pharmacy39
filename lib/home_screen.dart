@@ -1854,7 +1854,81 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openGlobalSearch() {
+  Future<void> _openGlobalSearch() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<Map<String, dynamic>> allQuestions = [];
+    final List<Map<String, dynamic>> allMaterials = [];
+
+    for (final s in _subjects) {
+      final sid = s['id'];
+      final sname = (s['name'] ?? '').toString();
+      final hex = (s['color_hex'] ?? '#2B6CB0').toString();
+
+      final rawQ = prefs.getString('cache_questions_$sid');
+      if (rawQ != null && rawQ.isNotEmpty) {
+        try {
+          for (final q in jsonDecode(rawQ)) {
+            allQuestions.add({
+              ...Map<String, dynamic>.from(q),
+              '_subject': s,
+              '_subjName': sname,
+              '_colorHex': hex,
+            });
+          }
+        } catch (_) {}
+      }
+
+      final rawM = prefs.getString('cache_materials_$sid');
+      if (rawM != null && rawM.isNotEmpty) {
+        try {
+          for (final m in jsonDecode(rawM)) {
+            allMaterials.add({
+              ...Map<String, dynamic>.from(m),
+              '_subject': s,
+              '_subjName': sname,
+              '_colorHex': hex,
+            });
+          }
+        } catch (_) {}
+      }
+    }
+
+    // محاولة جلب الأسئلة والملفات من السحابة إن لم تكن مخزنة محلياً بعد
+    if (allQuestions.isEmpty || allMaterials.isEmpty) {
+      try {
+        final subjById = {for (final s in _subjects) s['id']: s};
+        if (allQuestions.isEmpty) {
+          final qRows = await Supabase.instance.client.from('questions').select().limit(500);
+          for (final q in qRows) {
+            final s = subjById[q['subject_id']];
+            if (s != null) {
+              allQuestions.add({
+                ...Map<String, dynamic>.from(q),
+                '_subject': s,
+                '_subjName': (s['name'] ?? '').toString(),
+                '_colorHex': (s['color_hex'] ?? '#2B6CB0').toString(),
+              });
+            }
+          }
+        }
+        if (allMaterials.isEmpty) {
+          final mRows = await Supabase.instance.client.from('materials').select().limit(500);
+          for (final m in mRows) {
+            final s = subjById[m['subject_id']];
+            if (s != null) {
+              allMaterials.add({
+                ...Map<String, dynamic>.from(m),
+                '_subject': s,
+                '_subjName': (s['name'] ?? '').toString(),
+                '_colorHex': (s['color_hex'] ?? '#2B6CB0').toString(),
+              });
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
     showSearch(
       context: context,
       delegate: AppGlobalSearchDelegate(
@@ -1862,6 +1936,18 @@ class _HomeScreenState extends State<HomeScreen> {
         schedule: _schedule,
         assignments: _assignments,
         notifications: _notifications,
+        announcements: _announcements,
+        references: _subjectReferences,
+        questions: allQuestions,
+        materials: allMaterials,
+        onOpenAnnouncement: (item) => _showAnnouncementFullModal(item),
+        onSwitchTab: (tabIdx) => setState(() => _currentIndex = tabIdx),
+        onOpenRadar: _openFastRadarAttendance,
+        onOpenQR: _showMyStudentQR,
+        onOpenChat: _openBatchChat,
+        onOpenNotifications: _openNotifications,
+        onOpenSettings: _openGeneralSettings,
+        onOpenAttendanceLog: _showMyAttendanceDetails,
       ),
     );
   }
@@ -2519,6 +2605,55 @@ class _HomeScreenState extends State<HomeScreen> {
                             }
                           },
                         ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          secondary: Icon(Icons.fingerprint_rounded, color: accent),
+                          title: Text(AppPrefs.tr('فتح قفل التطبيق بالبصمة', 'Unlock App with Fingerprint')),
+                          subtitle: Text(AppPrefs.tr('استخدام بصمة الإصبع عند فتح التطبيق', 'Use fingerprint on app launch')),
+                          value: AppPrefs.biometricEnabled,
+                          onChanged: (val) async {
+                            if (val) {
+                              final ok = await BiometricHelper.authenticate(
+                                reason: AppPrefs.tr('أكّد بصمتك لتفعيل قفل التطبيق بالبصمة', 'Confirm fingerprint to enable app lock'),
+                              );
+                              if (!ok) {
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    SnackBar(content: Text(AppPrefs.tr('تعذر التحقق من البصمة في جهازك', 'Biometric authentication failed')), backgroundColor: Colors.red),
+                                  );
+                                }
+                                return;
+                              }
+                            }
+                            await AppPrefs.setBiometricEnabled(val);
+                            setSettingsState(() {});
+                          },
+                        ),
+                        if (_isAdmin)
+                          SwitchListTile(
+                            contentPadding: EdgeInsets.zero,
+                            secondary: const Icon(Icons.admin_panel_settings_rounded, color: Colors.amber),
+                            title: Text(AppPrefs.tr('فتح لوحة الإدارة بالبصمة', 'Unlock Admin Panel with Fingerprint')),
+                            subtitle: Text(AppPrefs.tr('الدخول السريع للوحة الإدارة ببصمتك بدلاً من الرمز', 'Quick admin login via fingerprint')),
+                            value: AppPrefs.adminBiometricEnabled,
+                            onChanged: (val) async {
+                              if (val) {
+                                final ok = await BiometricHelper.authenticate(
+                                  reason: AppPrefs.tr('أكّد بصمتك لتفعيل الدخول السريع للوحة الإدارة', 'Confirm fingerprint for Admin Panel'),
+                                );
+                                if (!ok) {
+                                  if (ctx.mounted) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      SnackBar(content: Text(AppPrefs.tr('تعذر التحقق من البصمة', 'Biometric verification failed')), backgroundColor: Colors.red),
+                                    );
+                                  }
+                                  return;
+                                }
+                              }
+                              await AppPrefs.setAdminBiometricEnabled(val);
+                              setSettingsState(() {});
+                            },
+                          ),
                       ],
                     ),
                   ),
@@ -2627,6 +2762,19 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _promptAdminPassword() async {
+    if (AppPrefs.adminBiometricEnabled) {
+      final bioOk = await BiometricHelper.authenticate(
+        reason: AppPrefs.tr('ضع بصمتك لفتح لوحة إدارة الدفعة', 'Use fingerprint to open Admin Panel'),
+      );
+      if (bioOk && mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => AdminScreen(adminName: _studentName)),
+        );
+        return;
+      }
+    }
+
     final prefs = await SharedPreferences.getInstance();
     String activePin = prefs.getString('admin_pin') ?? '3939';
 
@@ -2664,6 +2812,23 @@ class _HomeScreenState extends State<HomeScreen> {
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 20, letterSpacing: 4),
               decoration: const InputDecoration(hintText: '••••', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 10),
+            TextButton.icon(
+              icon: Icon(Icons.fingerprint_rounded, color: accent),
+              label: Text(AppPrefs.tr('الدخول بالبصمة', 'Use Fingerprint'), style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
+              onPressed: () async {
+                final ok = await BiometricHelper.authenticate(
+                  reason: AppPrefs.tr('ضع بصمتك لفتح لوحة إدارة الدفعة', 'Use fingerprint to open Admin Panel'),
+                );
+                if (ok && dialogCtx.mounted) {
+                  Navigator.pop(dialogCtx);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => AdminScreen(adminName: _studentName)),
+                  );
+                }
+              },
             ),
           ],
         ),
@@ -3322,20 +3487,48 @@ class AppGlobalSearchDelegate extends SearchDelegate {
   final List<dynamic> schedule;
   final List<dynamic> assignments;
   final List<dynamic> notifications;
+  final List<dynamic> announcements;
+  final List<dynamic> references;
+  final List<Map<String, dynamic>> questions;
+  final List<Map<String, dynamic>> materials;
+  final void Function(Map<String, dynamic> item) onOpenAnnouncement;
+  final void Function(int tabIndex) onSwitchTab;
+  final VoidCallback onOpenRadar;
+  final VoidCallback onOpenQR;
+  final VoidCallback onOpenChat;
+  final VoidCallback onOpenNotifications;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onOpenAttendanceLog;
 
   AppGlobalSearchDelegate({
     required this.subjects,
     required this.schedule,
     required this.assignments,
     required this.notifications,
+    required this.announcements,
+    required this.references,
+    required this.questions,
+    required this.materials,
+    required this.onOpenAnnouncement,
+    required this.onSwitchTab,
+    required this.onOpenRadar,
+    required this.onOpenQR,
+    required this.onOpenChat,
+    required this.onOpenNotifications,
+    required this.onOpenSettings,
+    required this.onOpenAttendanceLog,
   });
 
   @override
-  String get searchFieldLabel => AppPrefs.tr('ابحث في المواد، الجدول، الإشعارات...', 'Search subjects, schedule, alerts...');
+  String get searchFieldLabel => AppPrefs.tr(
+        'ابحث في المواد، الأسئلة، الملفات، الإعلانات، والأدوات...',
+        'Search subjects, questions, files, ads, tools...',
+      );
 
   @override
   List<Widget>? buildActions(BuildContext context) => [
-        IconButton(icon: const Icon(Icons.clear), onPressed: () => query = ''),
+        if (query.isNotEmpty)
+          IconButton(icon: const Icon(Icons.clear), onPressed: () => query = ''),
       ];
 
   @override
@@ -3343,48 +3536,420 @@ class AppGlobalSearchDelegate extends SearchDelegate {
       IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => close(context, null));
 
   @override
-  Widget buildResults(BuildContext context) => _buildSearchResults();
+  Widget buildResults(BuildContext context) => _buildSearchResults(context);
 
   @override
-  Widget buildSuggestions(BuildContext context) => _buildSearchResults();
+  Widget buildSuggestions(BuildContext context) => _buildSearchResults(context);
 
-  Widget _buildSearchResults() {
-    if (query.trim().isEmpty) {
-      return Center(child: Text(AppPrefs.tr('اكتب أي كلمة للبحث في جميع أقسام التطبيق', 'Type to search across the app')));
+  Color _parseColor(String? hexStr) {
+    try {
+      final hex = (hexStr ?? '#2B6CB0').toString().replaceAll('#', '');
+      return Color(int.parse('FF$hex', radix: 16));
+    } catch (_) {
+      return const Color(0xFF2B6CB0);
     }
-    final q = query.toLowerCase();
+  }
+
+  Widget _buildSearchResults(BuildContext context) {
+    final accent = Theme.of(context).colorScheme.primary;
+    final cardBg = Theme.of(context).cardColor;
+    final cleanQ = query.trim().toLowerCase();
+
+    final List<Map<String, dynamic>> appFeatures = [
+      {
+        'title': AppPrefs.tr('حقيبة الصيدلي الإكلينيكي', 'Clinical Pharmacist Kit'),
+        'subtitle': AppPrefs.tr('تصفية الكرياتينين CrCl، جرعات الأطفال، والقيم المخبرية', 'CrCl, pediatric dose & normal lab values'),
+        'keywords': 'حقيبة الصيدلي الاكلينيكي السريري كرياتينين تصفية جرعات اطفال قيم مخبرية مختبر crcl cockcroft pediatric lab',
+        'icon': Icons.medical_services_rounded,
+        'color': Colors.tealAccent,
+        'action': () {
+          close(context, null);
+          Navigator.push(context, MaterialPageRoute(builder: (_) => const ClinicalPharmacistBagScreen()));
+        },
+      },
+      {
+        'title': AppPrefs.tr('حقيبة المراجعة ليلة الامتحان', 'Exam Night Review Bag'),
+        'subtitle': AppPrefs.tr('مرجع المواد، الأسئلة والملفات المفضلة بنجمة', 'Subject references, starred questions & files'),
+        'keywords': 'حقيبة المراجعة ليلة الامتحان مرجع المواد مفضلة نجمة ملخصات exam review bag star',
+        'icon': Icons.auto_stories_rounded,
+        'color': Colors.amberAccent,
+        'action': () {
+          close(context, null);
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => ExamNightReviewScreen(subjects: subjects, references: references)),
+          );
+        },
+      },
+      {
+        'title': AppPrefs.tr('حاسبة المعدل التراكمي (GPA)', 'GPA Calculator'),
+        'subtitle': AppPrefs.tr('حساب المعدل الفصلي والتراكمي والساعات المعتمدة', 'Calculate semester & cumulative GPA'),
+        'keywords': 'حاسبة المعدل التراكمي الفصلي درجات تقدير ساعات gpa calculator',
+        'icon': Icons.calculate_rounded,
+        'color': Colors.lightBlueAccent,
+        'action': () {
+          close(context, null);
+          Navigator.push(context, MaterialPageRoute(builder: (_) => const GpaScreen()));
+        },
+      },
+      {
+        'title': AppPrefs.tr('رادار التحضير السريع (نظري / عملي)', 'Fast Attendance Radar'),
+        'subtitle': AppPrefs.tr('تسجيل الحضور داخل القاعة أو مجموعات العملي A-D', 'In-class & practical lab attendance'),
+        'keywords': 'رادار التحضير الحضور كود بلوتوث عملي نظري مجموعة attendance radar pin',
+        'icon': Icons.radar_rounded,
+        'color': accent,
+        'action': () {
+          close(context, null);
+          onOpenRadar();
+        },
+      },
+      {
+        'title': AppPrefs.tr('بطاقة التحضير الذكية (QR)', 'Smart Attendance QR'),
+        'subtitle': AppPrefs.tr('عرض كود QR الشخصي للمندوب', 'Show personal QR badge'),
+        'keywords': 'كود باركود بطاقة التحضير qr code',
+        'icon': Icons.qr_code_2_rounded,
+        'color': accent,
+        'action': () {
+          close(context, null);
+          onOpenQR();
+        },
+      },
+      {
+        'title': AppPrefs.tr('سجل حضوري الشخصي', 'My Attendance Log'),
+        'subtitle': AppPrefs.tr('عرض عدد المحاضرات التي حضرتها في كل مادة', 'View attended lectures count'),
+        'keywords': 'سجل حضوري غياب محاضرات attendance log',
+        'icon': Icons.fact_check_rounded,
+        'color': Colors.green,
+        'action': () {
+          close(context, null);
+          onOpenAttendanceLog();
+        },
+      },
+      {
+        'title': AppPrefs.tr('دردشة الدفعة ودردشة البلوتوث', 'Batch & Offline Bluetooth Chat'),
+        'subtitle': AppPrefs.tr('محادثة الدفعة أو التواصل بدون إنترنت داخل القاعة', 'Group chat & offline BLE chat'),
+        'keywords': 'دردشة الدفعة محادثة بلوتوث بدون نت رسائل chat bluetooth',
+        'icon': Icons.chat_rounded,
+        'color': Colors.teal,
+        'action': () {
+          close(context, null);
+          onOpenChat();
+        },
+      },
+      {
+        'title': AppPrefs.tr('دليل الدفعة والمناديب', 'Batch Directory & Links'),
+        'subtitle': AppPrefs.tr('أرقام التواصل والروابط المهمة للدفعة', 'Contacts & useful batch links'),
+        'keywords': 'دليل الدفعة المناديب ارقام روابط تواصل directory contacts links',
+        'icon': Icons.contact_phone_rounded,
+        'color': Colors.purpleAccent,
+        'action': () {
+          close(context, null);
+          Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
+        },
+      },
+      {
+        'title': AppPrefs.tr('الإشعارات والتعاميم', 'Notifications & Alerts'),
+        'subtitle': AppPrefs.tr('عرض جميع إشعارات وتعاميم الدفعة', 'View all batch announcements & alerts'),
+        'keywords': 'الاشعارات التعاميم تنبيهات notifications alerts',
+        'icon': Icons.notifications_active_rounded,
+        'color': Colors.amber,
+        'action': () {
+          close(context, null);
+          onOpenNotifications();
+        },
+      },
+      {
+        'title': AppPrefs.tr('الإعدادات وتحديث البرنامج', 'Settings & Software Update'),
+        'subtitle': AppPrefs.tr('تغيير الثيم، الخط، الخلفية، البريد الجامعي، وتحديث التطبيق', 'Themes, fonts, email & updates'),
+        'keywords': 'الاعدادات التخصيص ثيم خط خلفية بريد جامعي تحديث البرنامج settings theme update',
+        'icon': Icons.settings_rounded,
+        'color': Colors.orangeAccent,
+        'action': () {
+          close(context, null);
+          onOpenSettings();
+        },
+      },
+    ];
+
+    if (cleanQ.isEmpty) {
+      return ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            AppPrefs.tr('وصول سريع لأدوات وميزات التطبيق:', 'Quick Access to App Tools & Features:'),
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey),
+          ),
+          const SizedBox(height: 10),
+          ...appFeatures.map((f) => Card(
+                color: cardBg,
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: (f['color'] as Color).withOpacity(0.16),
+                    child: Icon(f['icon'] as IconData, color: f['color'] as Color, size: 20),
+                  ),
+                  title: Text(f['title'] as String, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                  subtitle: Text(f['subtitle'] as String, style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+                  trailing: const Icon(Icons.chevron_right_rounded, size: 18, color: Colors.grey),
+                  onTap: f['action'] as VoidCallback,
+                ),
+              )),
+        ],
+      );
+    }
+
     final List<Widget> results = [];
 
-    for (var s in subjects) {
-      if ((s['name'] ?? '').toString().toLowerCase().contains(q)) {
+    void addSectionHeader(String title, IconData icon) {
+      results.add(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+          child: Row(
+            children: [
+              Icon(icon, size: 16, color: accent),
+              const SizedBox(width: 6),
+              Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: accent)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // 1. الأدوات والميزات
+    final matchedTools = appFeatures.where((f) {
+      final hay = '${f['title']} ${f['subtitle']} ${f['keywords']}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedTools.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('الأدوات والميزات (${matchedTools.length})', 'Tools & Features (${matchedTools.length})'), Icons.widgets_rounded);
+      for (final f in matchedTools) {
         results.add(ListTile(
-          leading: const Icon(Icons.book, color: Color(0xFF4FD1C5)),
-          title: Text(s['name']),
-          subtitle: Text(AppPrefs.tr('قسم: المواد الدراسية', 'Subjects')),
+          leading: CircleAvatar(
+            backgroundColor: (f['color'] as Color).withOpacity(0.18),
+            child: Icon(f['icon'] as IconData, color: f['color'] as Color, size: 20),
+          ),
+          title: Text(f['title'] as String, style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text(f['subtitle'] as String, maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+          onTap: f['action'] as VoidCallback,
         ));
       }
     }
-    for (var n in notifications) {
-      if ((n['title'] ?? '').toString().toLowerCase().contains(q) || (n['body'] ?? '').toString().toLowerCase().contains(q)) {
+
+    // 2. المواد الدراسية
+    final matchedSubjects = subjects.where((s) {
+      final hay = '${s['name'] ?? ''} ${s['subtitle'] ?? ''}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedSubjects.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('المواد الدراسية (${matchedSubjects.length})', 'Subjects (${matchedSubjects.length})'), Icons.menu_book_rounded);
+      for (final s in matchedSubjects) {
+        final col = _parseColor(s['color_hex']?.toString());
         results.add(ListTile(
-          leading: const Icon(Icons.notifications, color: Colors.amber),
-          title: Text(n['title']),
-          subtitle: Text('${n['body']}', maxLines: 1, overflow: TextOverflow.ellipsis),
+          leading: CircleAvatar(backgroundColor: col.withOpacity(0.2), child: Icon(Icons.menu_book_rounded, color: col)),
+          title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text((s['subtitle'] ?? '').toString().isNotEmpty ? s['subtitle'] : AppPrefs.tr('فتح المادة والملفات وبنك الأسئلة', 'Open subject')),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: () {
+            close(context, null);
+            Navigator.push(context, MaterialPageRoute(builder: (_) => SubjectScreen(subject: s, defaultColor: col)));
+          },
         ));
       }
     }
-    for (var sc in schedule) {
-      if ((sc['subject_name'] ?? '').toString().toLowerCase().contains(q) || (sc['doctor_name'] ?? '').toString().toLowerCase().contains(q)) {
+
+    // 3. بنك الأسئلة (نص السؤال، الخيارات، أو التوضيح)
+    final matchedQuestions = questions.where((q) {
+      final optsStr = q['options'] is String ? q['options'] : jsonEncode(q['options'] ?? []);
+      final hay = '${q['question_text'] ?? ''} $optsStr ${q['explanation'] ?? ''} ${q['_subjName'] ?? ''}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedQuestions.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('بنك الأسئلة (${matchedQuestions.length})', 'Question Bank (${matchedQuestions.length})'), Icons.quiz_rounded);
+      for (final q in matchedQuestions.take(30)) {
+        final List<dynamic> opts = q['options'] is String ? jsonDecode(q['options']) : (q['options'] ?? []);
+        final int cIdx = q['correct_index'] ?? 0;
+        final correctText = (cIdx >= 0 && cIdx < opts.length) ? opts[cIdx].toString() : '';
+        final subjObj = q['_subject'];
+        final col = _parseColor(q['_colorHex']?.toString());
+
         results.add(ListTile(
-          leading: const Icon(Icons.calendar_today, color: Colors.blueAccent),
-          title: Text('${sc['subject_name']} (${sc['day_name']})'),
-          subtitle: Text('${sc['time_range']} - ${sc['hall']}'),
+          leading: CircleAvatar(backgroundColor: col.withOpacity(0.2), child: Icon(Icons.help_outline_rounded, color: col)),
+          title: Text(q['question_text'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+          subtitle: Text(
+            '${q['_subjName']}  •  ✅ $correctText',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.greenAccent),
+          ),
+          onTap: subjObj == null
+              ? null
+              : () {
+                  close(context, null);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => SubjectScreen(subject: subjObj, defaultColor: col)));
+                },
+        ));
+      }
+    }
+
+    // 4. الملفات والمحاضرات
+    final matchedMaterials = materials.where((m) {
+      final hay = '${m['title'] ?? ''} ${m['_subjName'] ?? ''} ${m['file_type'] ?? ''}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedMaterials.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('الملفات والمحاضرات (${matchedMaterials.length})', 'Files & Lectures (${matchedMaterials.length})'), Icons.folder_copy_rounded);
+      for (final m in matchedMaterials.take(30)) {
+        final subjObj = m['_subject'];
+        final col = _parseColor(m['_colorHex']?.toString());
+        results.add(ListTile(
+          leading: CircleAvatar(backgroundColor: col.withOpacity(0.2), child: Icon(Icons.picture_as_pdf_rounded, color: col)),
+          title: Text(m['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text('${m['_subjName']} • المحاضرة ${m['lecture_number']} (${m['file_type'] ?? 'PDF'})'),
+          onTap: subjObj == null
+              ? null
+              : () {
+                  close(context, null);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => SubjectScreen(subject: subjObj, defaultColor: col)));
+                },
+        ));
+      }
+    }
+
+    // 5. بطاقات المرجع السريع للمواد (حقيبة المراجعة)
+    final matchedRefs = references.where((r) {
+      final hay = '${r['title'] ?? ''} ${r['content'] ?? ''}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedRefs.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('مرجع المواد وحقيبة الامتحان (${matchedRefs.length})', 'Subject References (${matchedRefs.length})'), Icons.bookmark_rounded);
+      for (final r in matchedRefs) {
+        results.add(ListTile(
+          leading: const CircleAvatar(backgroundColor: Colors.amber, child: Icon(Icons.bookmark_rounded, color: Colors.black)),
+          title: Text(r['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text(r['content'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis),
+          onTap: () {
+            close(context, null);
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => ExamNightReviewScreen(subjects: subjects, references: references)),
+            );
+          },
+        ));
+      }
+    }
+
+    // 6. الإعلانات والتصويتات
+    final matchedAnnouncements = announcements.where((a) {
+      final pollsStr = a['poll_options'] is List ? (a['poll_options'] as List).join(' ') : '';
+      final hay = '${a['title'] ?? ''} ${a['description'] ?? ''} $pollsStr'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedAnnouncements.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('الإعلانات والتصويتات (${matchedAnnouncements.length})', 'Announcements & Polls (${matchedAnnouncements.length})'), Icons.campaign_rounded);
+      for (final a in matchedAnnouncements) {
+        final hasPoll = (a['poll_options'] is List) && (a['poll_options'] as List).isNotEmpty;
+        results.add(ListTile(
+          leading: CircleAvatar(
+            backgroundColor: accent.withOpacity(0.2),
+            child: Icon(hasPoll ? Icons.poll_rounded : Icons.campaign_rounded, color: accent),
+          ),
+          title: Text(a['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text(
+            hasPoll
+                ? (a['poll_options'] as List).join(' • ')
+                : ((a['description'] ?? '').toString().isNotEmpty ? a['description'] : AppPrefs.tr('إعلان للدفعة', 'Batch Announcement')),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: () {
+            close(context, null);
+            onOpenAnnouncement(Map<String, dynamic>.from(a));
+          },
+        ));
+      }
+    }
+
+    // 7. التكاليف والواجبات
+    final matchedAssignments = assignments.where((t) {
+      final hay = '${t['subject_name'] ?? ''} ${t['title'] ?? ''} ${t['details'] ?? ''}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedAssignments.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('التكاليف والواجبات (${matchedAssignments.length})', 'Assignments (${matchedAssignments.length})'), Icons.push_pin_rounded);
+      for (final t in matchedAssignments) {
+        results.add(ListTile(
+          leading: const CircleAvatar(backgroundColor: Colors.redAccent, child: Icon(Icons.push_pin_rounded, color: Colors.white)),
+          title: Text('${t['subject_name']}: ${t['title']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text(t['details'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+          onTap: () {
+            close(context, null);
+            onSwitchTab(2);
+          },
+        ));
+      }
+    }
+
+    // 8. جدول المحاضرات
+    final matchedSchedule = schedule.where((sc) {
+      final hay = '${sc['subject_name'] ?? ''} ${sc['doctor_name'] ?? ''} ${sc['day_name'] ?? ''} ${sc['hall'] ?? ''}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedSchedule.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('جدول المحاضرات (${matchedSchedule.length})', 'Schedule (${matchedSchedule.length})'), Icons.calendar_today_rounded);
+      for (final sc in matchedSchedule) {
+        results.add(ListTile(
+          leading: const CircleAvatar(backgroundColor: Colors.blueAccent, child: Icon(Icons.calendar_today_rounded, color: Colors.white, size: 18)),
+          title: Text('${sc['subject_name']} (${sc['day_name']})', style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text('${sc['time_range']} • ${sc['hall']} • ${sc['doctor_name']}'),
+          onTap: () {
+            close(context, null);
+            onSwitchTab(1);
+          },
+        ));
+      }
+    }
+
+    // 9. الإشعارات والتعاميم
+    final matchedNotifs = notifications.where((n) {
+      final hay = '${n['title'] ?? ''} ${n['body'] ?? ''} ${n['sender_name'] ?? ''}'.toLowerCase();
+      return hay.contains(cleanQ);
+    }).toList();
+
+    if (matchedNotifs.isNotEmpty) {
+      addSectionHeader(AppPrefs.tr('الإشعارات والتعاميم (${matchedNotifs.length})', 'Notifications (${matchedNotifs.length})'), Icons.notifications_rounded);
+      for (final n in matchedNotifs) {
+        results.add(ListTile(
+          leading: const CircleAvatar(backgroundColor: Colors.amber, child: Icon(Icons.notifications_rounded, color: Colors.black)),
+          title: Text(n['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text(n['body'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis),
+          onTap: () {
+            close(context, null);
+            onOpenNotifications();
+          },
         ));
       }
     }
 
     return results.isEmpty
-        ? Center(child: Text(AppPrefs.tr('لا توجد نتائج مطابقة لبحثك', 'No matching results')))
+        ? Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                AppPrefs.tr('لا توجد نتائج مطابقة لـ "$query" في أي قسم من التطبيق', 'No matching results for "$query"'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey),
+              ),
+            ),
+          )
         : ListView(children: results);
   }
 }
