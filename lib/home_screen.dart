@@ -38,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _studentId = '';
   String _universityEmail = '';
   String _profilePhotoPath = '';
+  String _profileAvatarUrl = '';
   String _lastSyncText = '';
   bool _isAdmin = false;
   bool _isSyncing = false;
@@ -117,7 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       return '${weekDays[now.weekday - 1]}, ${now.day} ${months[now.month - 1]}';
     } else {
-      const weekDays = ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الجمعة', 'الجمعة', 'السبت', 'الأحد'];
+      const weekDays = ['الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد'];
       const months = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
       return '${weekDays[now.weekday - 1]}، ${now.day} ${months[now.month - 1]}';
     }
@@ -150,6 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _studentId = prefs.getString('student_id') ?? '';
       _universityEmail = prefs.getString('university_email') ?? '';
       _profilePhotoPath = prefs.getString('profile_photo_path') ?? '';
+      _profileAvatarUrl = prefs.getString('profile_avatar_url') ?? '';
       _lastSyncText = prefs.getString('last_sync_time') ?? '';
       _isAdmin = prefs.getBool('is_admin') ?? false;
       _urgentBanner = prefs.getString('cache_urgent_banner') ?? '';
@@ -222,18 +224,38 @@ class _HomeScreenState extends State<HomeScreen> {
 
       bool cloudAdmin = _isAdmin;
       String cloudEmail = _universityEmail;
+      String cloudAvatar = _profileAvatarUrl;
       List<dynamic> attendanceData = _myAttendance;
       if (_studentId.isNotEmpty) {
-        final me = await client
-            .from('students')
-            .select('is_admin, university_email')
-            .eq('student_id', _studentId)
-            .maybeSingle();
-        if (me != null) {
-          cloudAdmin = me['is_admin'] ?? false;
-          if (me['university_email'] != null) {
-            cloudEmail = me['university_email'].toString();
+        try {
+          final me = await client
+              .from('students')
+              .select('is_admin, university_email, avatar_url')
+              .eq('student_id', _studentId)
+              .maybeSingle();
+          if (me != null) {
+            cloudAdmin = me['is_admin'] ?? false;
+            if (me['university_email'] != null) {
+              cloudEmail = me['university_email'].toString();
+            }
+            if (me['avatar_url'] != null) {
+              cloudAvatar = me['avatar_url'].toString();
+            }
           }
+        } catch (_) {
+          try {
+            final me = await client
+                .from('students')
+                .select('is_admin, university_email')
+                .eq('student_id', _studentId)
+                .maybeSingle();
+            if (me != null) {
+              cloudAdmin = me['is_admin'] ?? false;
+              if (me['university_email'] != null) {
+                cloudEmail = me['university_email'].toString();
+              }
+            }
+          } catch (_) {}
         }
         try {
           attendanceData = await client
@@ -250,6 +272,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       await prefs.setBool('is_admin', cloudAdmin);
       await prefs.setString('university_email', cloudEmail);
+      await prefs.setString('profile_avatar_url', cloudAvatar);
       await prefs.setString('last_sync_time', syncStamp);
       await prefs.setString('cache_urgent_banner', bannerText);
       await prefs.setString('cache_calendar_occasions', jsonEncode(occMap));
@@ -265,6 +288,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _isAdmin = cloudAdmin;
         _universityEmail = cloudEmail;
+        _profileAvatarUrl = cloudAvatar;
         _lastSyncText = syncStamp;
         _urgentBanner = bannerText;
         _calendarOccasions = occMap;
@@ -297,6 +321,91 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _isSyncing = false);
     }
+  }
+
+  Future<void> _pickAndUploadProfilePhoto() async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70, maxWidth: 400);
+    if (picked == null) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('profile_photo_path', picked.path);
+    if (mounted) setState(() => _profilePhotoPath = picked.path);
+
+    // رفع الصورة سحابياً ليراها بقية الطلاب في دردشة الدفعة بجانب رسائله
+    try {
+      final bytes = await picked.readAsBytes();
+      final ext = picked.name.split('.').last;
+      final fileName = 'avatar_${_studentId}_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await Supabase.instance.client.storage.from('announcements').uploadBinary(fileName, bytes);
+      final publicUrl = Supabase.instance.client.storage.from('announcements').getPublicUrl(fileName);
+
+      await Supabase.instance.client
+          .from('students')
+          .update({'avatar_url': publicUrl})
+          .eq('student_id', _studentId);
+
+      await prefs.setString('profile_avatar_url', publicUrl);
+      if (mounted) setState(() => _profileAvatarUrl = publicUrl);
+    } catch (_) {}
+  }
+
+  Future<void> _deleteProfilePhoto() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('profile_photo_path');
+    await prefs.remove('profile_avatar_url');
+    if (mounted) {
+      setState(() {
+        _profilePhotoPath = '';
+        _profileAvatarUrl = '';
+      });
+    }
+    try {
+      await Supabase.instance.client
+          .from('students')
+          .update({'avatar_url': null})
+          .eq('student_id', _studentId);
+    } catch (_) {}
+  }
+
+  void _showProfilePhotoOptions() {
+    final hasAnyPhoto = (_profilePhotoPath.isNotEmpty && !kIsWeb && File(_profilePhotoPath).existsSync()) ||
+        _profileAvatarUrl.isNotEmpty;
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_rounded, color: Colors.teal),
+                title: Text(AppPrefs.tr('تغيير الصورة الشخصية من المعرض', 'Change Profile Photo')),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndUploadProfilePhoto();
+                },
+              ),
+              if (hasAnyPhoto)
+                ListTile(
+                  leading: const Icon(Icons.delete_forever_rounded, color: Colors.redAccent),
+                  title: Text(
+                    AppPrefs.tr('حذف الصورة الشخصية نهائياً', 'Delete Profile Photo Permanently'),
+                    style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _deleteProfilePhoto();
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _voteOnAnnouncementPoll(Map<String, dynamic> annItem, int optionIndex) async {
@@ -438,7 +547,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildSideMenuDrawer(Color cardBg, Color accent) {
     final isDark = AppPrefs.isDark;
-    final hasPhoto = _profilePhotoPath.isNotEmpty && !kIsWeb && File(_profilePhotoPath).existsSync();
+    final hasLocalPhoto = _profilePhotoPath.isNotEmpty && !kIsWeb && File(_profilePhotoPath).existsSync();
+    final hasNetPhoto = _profileAvatarUrl.isNotEmpty;
+
+    ImageProvider? avatarImg;
+    if (hasLocalPhoto) {
+      avatarImg = FileImage(File(_profilePhotoPath));
+    } else if (hasNetPhoto) {
+      avatarImg = NetworkImage(_profileAvatarUrl);
+    }
 
     return Drawer(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -465,22 +582,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       GestureDetector(
-                        onTap: () async {
-                          final picker = ImagePicker();
-                          final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
-                          if (picked != null) {
-                            final prefs = await SharedPreferences.getInstance();
-                            await prefs.setString('profile_photo_path', picked.path);
-                            if (mounted) setState(() => _profilePhotoPath = picked.path);
-                          }
-                        },
+                        onTap: _showProfilePhotoOptions,
                         child: Stack(
                           children: [
                             CircleAvatar(
                               radius: 30,
                               backgroundColor: accent.withOpacity(0.2),
-                              backgroundImage: hasPhoto ? FileImage(File(_profilePhotoPath)) : null,
-                              child: !hasPhoto ? Icon(Icons.person_rounded, size: 32, color: accent) : null,
+                              backgroundImage: avatarImg,
+                              child: avatarImg == null ? Icon(Icons.person_rounded, size: 32, color: accent) : null,
                             ),
                             Positioned(
                               bottom: 0,
@@ -488,7 +597,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               child: Container(
                                 padding: const EdgeInsets.all(4),
                                 decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
-                                child: const Icon(Icons.camera_alt_rounded, size: 12, color: Colors.black),
+                                child: const Icon(Icons.edit_rounded, size: 12, color: Colors.black),
                               ),
                             ),
                           ],
@@ -734,6 +843,41 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// بناء شعار التطبيق الرسمي في وسط الترويسة بدون خلفية
+  Widget _buildCenterAppLogo(Color accent) {
+    return ClipOval(
+      child: Image.asset(
+        'assets/logo.png',
+        width: 44,
+        height: 44,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => Image.asset(
+          'assets/icon.png',
+          width: 44,
+          height: 44,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Image.asset(
+            'logo.png',
+            width: 44,
+            height: 44,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => Image.asset(
+              'icon.png',
+              width: 44,
+              height: 44,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.local_pharmacy_rounded,
+                size: 38,
+                color: accent,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildDashboardTab(Color cardBg, Color accent) {
     final borderCol = Colors.grey.withOpacity(0.2);
     final radius = AppPrefs.cardRadius;
@@ -776,8 +920,9 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 12),
           ],
 
+          // الصف الأول: الترحيب + الاسم الأول (يمين) | شعار التطبيق الرسمي (وسط) | التاريخ (يسار)
           Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Expanded(
                 child: Column(
@@ -794,115 +939,105 @@ class _HomeScreenState extends State<HomeScreen> {
                       _firstName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _miniHeaderBtn(
-                          icon: Icons.radar_rounded,
-                          tooltip: AppPrefs.tr('رادار التحضير', 'Attendance Radar'),
-                          onTap: _openFastRadarAttendance,
-                          cardBg: cardBg,
-                          accent: accent,
-                        ),
-                        const SizedBox(width: 8),
-                        _miniHeaderBtn(
-                          icon: Icons.qr_code_2_rounded,
-                          tooltip: AppPrefs.tr('كودي (QR)', 'My QR'),
-                          onTap: _showMyStudentQR,
-                          cardBg: cardBg,
-                          accent: accent,
-                        ),
-                      ],
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
               ),
 
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                child: Image.asset(
-                  'logo.png',
-                  width: 46,
-                  height: 46,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => Image.asset(
-                    'icon.png',
-                    width: 44,
-                    height: 44,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => Icon(
-                      Icons.local_pharmacy_rounded,
-                      size: 42,
-                      color: accent,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: _buildCenterAppLogo(accent),
+              ),
+
+              Expanded(
+                child: Align(
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: InkWell(
+                    onTap: () => setState(() => _currentIndex = 1),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: borderCol),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.calendar_today_rounded, size: 12, color: accent),
+                          const SizedBox(width: 5),
+                          Flexible(
+                            child: Text(
+                              _formattedTodayDate(),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.grey),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
               ),
+            ],
+          ),
 
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    InkWell(
-                      onTap: () => setState(() => _currentIndex = 1),
-                      borderRadius: BorderRadius.circular(12),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: cardBg,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: borderCol),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.calendar_today_rounded, size: 12, color: accent),
-                            const SizedBox(width: 5),
-                            Flexible(
-                              child: Text(
-                                _formattedTodayDate(),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.grey),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _miniHeaderBtn(
-                          icon: Icons.notifications_active_rounded,
-                          tooltip: AppPrefs.tr('الإشعارات', 'Alerts'),
-                          onTap: _openNotifications,
-                          cardBg: cardBg,
-                          accent: accent,
-                          badge: _notifications.length,
-                        ),
-                        const SizedBox(width: 8),
-                        _miniHeaderBtn(
-                          icon: Icons.menu_rounded,
-                          tooltip: AppPrefs.tr('القائمة والأدوات', 'Menu'),
-                          onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
-                          cardBg: cardBg,
-                          accent: accent,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+          const SizedBox(height: 12),
+
+          // الصف الثاني: الأدوات الأربع مرتبة على سطر واحد متناسق (رادار، QR، الإشعارات، القائمة ☰)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _miniHeaderBtn(
+                    icon: Icons.radar_rounded,
+                    tooltip: AppPrefs.tr('رادار التحضير', 'Attendance Radar'),
+                    onTap: _openFastRadarAttendance,
+                    cardBg: cardBg,
+                    accent: accent,
+                  ),
+                  const SizedBox(width: 10),
+                  _miniHeaderBtn(
+                    icon: Icons.qr_code_2_rounded,
+                    tooltip: AppPrefs.tr('كودي (QR)', 'My QR'),
+                    onTap: _showMyStudentQR,
+                    cardBg: cardBg,
+                    accent: accent,
+                  ),
+                ],
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _miniHeaderBtn(
+                    icon: Icons.notifications_active_rounded,
+                    tooltip: AppPrefs.tr('الإشعارات', 'Alerts'),
+                    onTap: _openNotifications,
+                    cardBg: cardBg,
+                    accent: accent,
+                    badge: _notifications.length,
+                  ),
+                  const SizedBox(width: 10),
+                  _miniHeaderBtn(
+                    icon: Icons.menu_rounded,
+                    tooltip: AppPrefs.tr('القائمة والأدوات', 'Menu'),
+                    onTap: () => _scaffoldKey.currentState?.openEndDrawer(),
+                    cardBg: cardBg,
+                    accent: accent,
+                  ),
+                ],
               ),
             ],
           ),
 
           const SizedBox(height: 14),
 
+          // شريط البحث الشامل بتصميم كبسولة واتساب
           InkWell(
             onTap: _openGlobalSearch,
             borderRadius: BorderRadius.circular(30),
@@ -1117,14 +1252,14 @@ class _HomeScreenState extends State<HomeScreen> {
           clipBehavior: Clip.none,
           children: [
             Container(
-              width: 38,
-              height: 38,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: cardBg,
                 shape: BoxShape.circle,
                 border: Border.all(color: Colors.grey.withOpacity(0.22)),
               ),
-              child: Icon(icon, size: 19, color: accent),
+              child: Icon(icon, size: 20, color: accent),
             ),
             if (badge > 0)
               Positioned(
@@ -1780,6 +1915,8 @@ class _HomeScreenState extends State<HomeScreen> {
           studentId: _studentId,
           defaultName: _studentName,
           isAdmin: _isAdmin,
+          myLocalPhotoPath: _profilePhotoPath,
+          myAvatarUrl: _profileAvatarUrl,
         ),
       ),
     );
@@ -3240,15 +3377,21 @@ class AppGlobalSearchDelegate extends SearchDelegate {
   }
 }
 
+/// دردشة الدفعة السريعة (تحديث لحظي فوري بدون تعليق + عرض صورة الملف الشخصي بجانب الرسائل مثل واتساب)
 class BatchChatScreen extends StatefulWidget {
   final String studentId;
   final String defaultName;
   final bool isAdmin;
+  final String myLocalPhotoPath;
+  final String myAvatarUrl;
+
   const BatchChatScreen({
     super.key,
     required this.studentId,
     required this.defaultName,
     this.isAdmin = false,
+    this.myLocalPhotoPath = '',
+    this.myAvatarUrl = '',
   });
 
   @override
@@ -3260,17 +3403,25 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
   final ScrollController _scrollCtrl = ScrollController();
   late String _nickname;
   bool _isChatMuted = false;
+  bool _isLoadingMsgs = true;
+  List<Map<String, dynamic>> _messages = [];
+  Map<String, String> _avatarsMap = {};
   Map<String, dynamic>? _replyingTo;
+  Timer? _chatPollTimer;
 
   @override
   void initState() {
     super.initState();
     _nickname = widget.defaultName.split(' ').take(2).join(' ');
     _loadMuteState();
+    _loadAvatarsMap();
+    _fetchMessages(initial: true);
+    _chatPollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _fetchMessages());
   }
 
   @override
   void dispose() {
+    _chatPollTimer?.cancel();
     _msgCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -3282,6 +3433,52 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     setState(() {
       _isChatMuted = prefs.getBool('notif_batch_chat_muted') ?? false;
     });
+  }
+
+  Future<void> _loadAvatarsMap() async {
+    try {
+      final rows = await Supabase.instance.client.from('students').select('student_id, avatar_url');
+      final Map<String, String> map = {};
+      for (final r in rows) {
+        final sid = (r['student_id'] ?? '').toString();
+        final url = (r['avatar_url'] ?? '').toString();
+        if (sid.isNotEmpty && url.isNotEmpty) {
+          map[sid] = url;
+        }
+      }
+      if (mounted) setState(() => _avatarsMap = map);
+    } catch (_) {}
+  }
+
+  Future<void> _fetchMessages({bool initial = false}) async {
+    try {
+      final rows = await Supabase.instance.client
+          .from('chat_messages')
+          .select()
+          .order('created_at', ascending: true)
+          .limit(150);
+
+      if (!mounted) return;
+      final list = rows.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e)).toList();
+      final hadDifferentLen = list.length != _messages.length;
+
+      setState(() {
+        _messages = list;
+        _isLoadingMsgs = false;
+      });
+
+      if ((initial || hadDifferentLen) && _scrollCtrl.hasClients) {
+        Future.delayed(const Duration(milliseconds: 120), () {
+          if (_scrollCtrl.hasClients) {
+            _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
+          }
+        });
+      }
+    } catch (_) {
+      if (mounted && _isLoadingMsgs) {
+        setState(() => _isLoadingMsgs = false);
+      }
+    }
   }
 
   Future<void> _toggleChatMute() async {
@@ -3334,12 +3531,14 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
           .from('chat_messages')
           .update({'reactions': current})
           .eq('id', msg['id']);
+      await _fetchMessages();
     } catch (_) {}
   }
 
   Future<void> _deleteMessage(dynamic msgId) async {
     try {
       await Supabase.instance.client.from('chat_messages').delete().eq('id', msgId);
+      await _fetchMessages();
     } catch (_) {}
   }
 
@@ -3411,7 +3610,25 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
 
     final replySnapshot = _replyingTo;
     _msgCtrl.clear();
-    setState(() => _replyingTo = null);
+    setState(() {
+      _replyingTo = null;
+      _messages.add({
+        'student_id': widget.studentId,
+        'nickname': _nickname,
+        'message': text,
+        'created_at': DateTime.now().toIso8601String(),
+        if (replySnapshot != null) 'reply_to_name': replySnapshot['nickname'],
+        if (replySnapshot != null) 'reply_to_text': replySnapshot['message'],
+      });
+    });
+
+    if (_scrollCtrl.hasClients) {
+      Future.delayed(const Duration(milliseconds: 80), () {
+        if (_scrollCtrl.hasClients) {
+          _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
+        }
+      });
+    }
 
     final payload = <String, dynamic>{
       'student_id': widget.studentId,
@@ -3428,12 +3645,37 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     try {
       await Supabase.instance.client.from('chat_messages').insert(payload);
     } catch (_) {
-      await Supabase.instance.client.from('chat_messages').insert({
-        'student_id': widget.studentId,
-        'nickname': _nickname,
-        'message': text,
-      });
+      try {
+        await Supabase.instance.client.from('chat_messages').insert({
+          'student_id': widget.studentId,
+          'nickname': _nickname,
+          'message': text,
+        });
+      } catch (_) {}
     }
+    await _fetchMessages();
+  }
+
+  Widget _buildSenderAvatar(String senderId, String senderName, Color accent, bool isMe) {
+    ImageProvider? img;
+    if (isMe && widget.myLocalPhotoPath.isNotEmpty && !kIsWeb && File(widget.myLocalPhotoPath).existsSync()) {
+      img = FileImage(File(widget.myLocalPhotoPath));
+    } else if (isMe && widget.myAvatarUrl.isNotEmpty) {
+      img = NetworkImage(widget.myAvatarUrl);
+    } else if (_avatarsMap.containsKey(senderId) && _avatarsMap[senderId]!.isNotEmpty) {
+      img = NetworkImage(_avatarsMap[senderId]!);
+    }
+
+    final initial = senderName.trim().isNotEmpty ? senderName.trim().characters.first : '؟';
+
+    return CircleAvatar(
+      radius: 16,
+      backgroundColor: accent.withOpacity(0.2),
+      backgroundImage: img,
+      child: img == null
+          ? Text(initial, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: accent))
+          : null,
+    );
   }
 
   @override
@@ -3441,11 +3683,6 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
     final isDark = AppPrefs.isDark;
-
-    final stream = Supabase.instance.client
-        .from('chat_messages')
-        .stream(primaryKey: ['id'])
-        .order('created_at', ascending: true);
 
     return Scaffold(
       appBar: AppBar(
@@ -3527,127 +3764,151 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: StreamBuilder(
-              stream: stream,
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-                final msgs = snapshot.data!;
-                return ListView.builder(
-                  controller: _scrollCtrl,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  itemCount: msgs.length,
-                  itemBuilder: (_, i) {
-                    final m = Map<String, dynamic>.from(msgs[i]);
-                    final isMe = m['student_id'] == widget.studentId;
-                    final replyName = (m['reply_to_name'] ?? '').toString();
-                    final replyText = (m['reply_to_text'] ?? '').toString();
-                    final Map<String, dynamic> reactions = Map<String, dynamic>.from(m['reactions'] ?? {});
+            child: _isLoadingMsgs
+                ? const Center(child: CircularProgressIndicator())
+                : _messages.isEmpty
+                    ? Center(
+                        child: Text(
+                          AppPrefs.tr('لا توجد رسائل بعد. ابدأ المحادثة مع دفعتك الآن!', 'No messages yet. Say hi to your batch!'),
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                      )
+                    : ListView.builder(
+                        controller: _scrollCtrl,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                        itemCount: _messages.length,
+                        itemBuilder: (_, i) {
+                          final m = _messages[i];
+                          final senderId = (m['student_id'] ?? '').toString();
+                          final senderName = (m['nickname'] ?? '').toString();
+                          final isMe = senderId == widget.studentId;
+                          final replyName = (m['reply_to_name'] ?? '').toString();
+                          final replyText = (m['reply_to_text'] ?? '').toString();
+                          final Map<String, dynamic> reactions = Map<String, dynamic>.from(m['reactions'] ?? {});
 
-                    final bubbleColor = isMe
-                        ? (isDark ? const Color(0xFF005C4B) : const Color(0xFFD9FDD3))
-                        : cardBg;
+                          final bubbleColor = isMe
+                              ? (isDark ? const Color(0xFF005C4B) : const Color(0xFFD9FDD3))
+                              : cardBg;
 
-                    return GestureDetector(
-                      onLongPress: () => _showMessageOptions(m, isMe),
-                      onHorizontalDragEnd: (_) => setState(() => _replyingTo = m),
-                      child: Align(
-                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
-                          decoration: BoxDecoration(
-                            color: bubbleColor,
-                            borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(16),
-                              topRight: const Radius.circular(16),
-                              bottomLeft: Radius.circular(isMe ? 16 : 4),
-                              bottomRight: Radius.circular(isMe ? 4 : 16),
-                            ),
-                            boxShadow: [
-                              BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 3, offset: const Offset(0, 1)),
-                            ],
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (!isMe)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 3),
-                                  child: Text(
-                                    m['nickname'] ?? '',
-                                    style: TextStyle(fontSize: 11.5, color: accent, fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                              if (replyText.isNotEmpty)
-                                Container(
-                                  margin: const EdgeInsets.only(bottom: 6),
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withOpacity(isDark ? 0.25 : 0.06),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border(right: BorderSide(color: accent, width: 3)),
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(replyName, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: accent)),
-                                      Text(replyText, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
-                                    ],
-                                  ),
-                                ),
-                              Text(
-                                m['message'] ?? '',
-                                style: TextStyle(
-                                  fontSize: 14.5,
-                                  height: 1.35,
-                                  color: isMe && !isDark ? Colors.black87 : null,
-                                ),
+                          final bubble = Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
+                            decoration: BoxDecoration(
+                              color: bubbleColor,
+                              borderRadius: BorderRadius.only(
+                                topLeft: const Radius.circular(16),
+                                topRight: const Radius.circular(16),
+                                bottomLeft: Radius.circular(isMe ? 16 : 4),
+                                bottomRight: Radius.circular(isMe ? 4 : 16),
                               ),
-                              const SizedBox(height: 4),
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    _formatMsgTime(m['created_at']),
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: isMe && !isDark ? Colors.black54 : Colors.grey,
+                              boxShadow: [
+                                BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 3, offset: const Offset(0, 1)),
+                              ],
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (!isMe)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 3),
+                                    child: Text(
+                                      senderName,
+                                      style: TextStyle(fontSize: 11.5, color: accent, fontWeight: FontWeight.bold),
                                     ),
                                   ),
-                                  if (isMe) ...[
-                                    const SizedBox(width: 4),
-                                    Icon(Icons.done_all_rounded, size: 14, color: isDark ? Colors.lightBlueAccent : Colors.blue),
-                                  ],
-                                ],
-                              ),
-                              if (reactions.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: Wrap(
-                                    spacing: 4,
-                                    children: reactions.entries.map((e) {
-                                      final count = (e.value as List).length;
-                                      return Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black.withOpacity(0.18),
-                                          borderRadius: BorderRadius.circular(10),
-                                        ),
-                                        child: Text('${e.key} $count', style: const TextStyle(fontSize: 11)),
-                                      );
-                                    }).toList(),
+                                if (replyText.isNotEmpty)
+                                  Container(
+                                    margin: const EdgeInsets.only(bottom: 6),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(isDark ? 0.25 : 0.06),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border(right: BorderSide(color: accent, width: 3)),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(replyName, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, color: accent)),
+                                        Text(replyText, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
+                                      ],
+                                    ),
+                                  ),
+                                Text(
+                                  m['message'] ?? '',
+                                  style: TextStyle(
+                                    fontSize: 14.5,
+                                    height: 1.35,
+                                    color: isMe && !isDark ? Colors.black87 : null,
                                   ),
                                 ),
-                            ],
-                          ),
-                        ),
+                                const SizedBox(height: 4),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      _formatMsgTime(m['created_at']),
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: isMe && !isDark ? Colors.black54 : Colors.grey,
+                                      ),
+                                    ),
+                                    if (isMe) ...[
+                                      const SizedBox(width: 4),
+                                      Icon(Icons.done_all_rounded, size: 14, color: isDark ? Colors.lightBlueAccent : Colors.blue),
+                                    ],
+                                  ],
+                                ),
+                                if (reactions.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Wrap(
+                                      spacing: 4,
+                                      children: reactions.entries.map((e) {
+                                        final count = (e.value as List).length;
+                                        return Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black.withOpacity(0.18),
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          child: Text('${e.key} $count', style: const TextStyle(fontSize: 11)),
+                                        );
+                                      }).toList(),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+
+                          return GestureDetector(
+                            onLongPress: () => _showMessageOptions(m, isMe),
+                            onHorizontalDragEnd: (_) => setState(() => _replyingTo = m),
+                            child: Padding(
+                              padding: const EdgeInsets.only(bottom: 2),
+                              child: Row(
+                                mainAxisAlignment: isMe ? MainAxisAlignment.start : MainAxisAlignment.end,
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: isMe
+                                    ? [
+                                        Padding(
+                                          padding: const EdgeInsets.only(bottom: 10, left: 6),
+                                          child: _buildSenderAvatar(senderId, senderName, accent, true),
+                                        ),
+                                        bubble,
+                                      ]
+                                    : [
+                                        bubble,
+                                        Padding(
+                                          padding: const EdgeInsets.only(bottom: 10, right: 6),
+                                          child: _buildSenderAvatar(senderId, senderName, accent, false),
+                                        ),
+                                      ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    );
-                  },
-                );
-              },
-            ),
           ),
           if (_replyingTo != null)
             Container(
