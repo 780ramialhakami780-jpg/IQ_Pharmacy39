@@ -1,0 +1,187 @@
+name: Build IQ_Pharmacy39 (Icon + Android + iOS)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Restore Permanent Signing Certificate
+        run: |
+          mkdir -p ~/.android
+          rm -f ~/.android/debug.keystore /tmp/temp.jks
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | tr -d ' \n\r' | base64 -d > /tmp/temp.jks
+          keytool -importkeystore -srckeystore /tmp/temp.jks -srcstorepass "${{ secrets.KEYSTORE_PASSWORD }}" -srcalias "${{ secrets.KEY_ALIAS }}" -destkeystore ~/.android/debug.keystore -deststorepass android -destkeypass android -destalias androiddebugkey -noprompt
+          rm -f /tmp/temp.jks
+          keytool -list -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey
+
+      - name: Initialize Platforms
+        run: |
+          flutter create . --platforms=android,web --org ye.su --project-name iq_pharmacy39
+          if [ -f google-services.json ]; then
+            cp google-services.json android/app/google-services.json
+          fi
+          python3 - << 'EOF'
+          import os, re
+
+          if os.path.exists("android/settings.gradle.kts"):
+              with open("android/settings.gradle.kts", "r") as f:
+                  s = f.read()
+              s = re.sub(
+                  r'(id\("com\.android\.application"\)[^\n]*)',
+                  r'\1\n    id("com.google.gms.google-services") version "4.4.2" apply false',
+                  s,
+                  count=1
+              )
+              with open("android/settings.gradle.kts", "w") as f:
+                  f.write(s)
+
+          if os.path.exists("android/app/build.gradle.kts"):
+              with open("android/app/build.gradle.kts", "r") as f:
+                  b = f.read()
+              b = re.sub(
+                  r'(id\("com\.android\.application"\)[^\n]*)',
+                  r'\1\n    id("com.google.gms.google-services")',
+                  b,
+                  count=1
+              )
+              b = re.sub(r'minSdk\s*=\s*[^\n]+', 'minSdk = 23', b)
+              extra_kts = '''
+          android {
+            compileSdk = 36
+            compileOptions {
+              isCoreLibraryDesugaringEnabled = true
+            }
+            signingConfigs {
+              getByName("debug") {
+                storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+              }
+            }
+            buildTypes {
+              getByName("release") {
+                signingConfig = signingConfigs.getByName("debug")
+              }
+            }
+          }
+          dependencies {
+            coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+          }
+          '''
+              b += "\n" + "\n".join(line[10:] if line.startswith("          ") else line for line in extra_kts.splitlines())
+              with open("android/app/build.gradle.kts", "w") as f:
+                  f.write(b)
+          elif os.path.exists("android/app/build.gradle"):
+              with open("android/app/build.gradle", "r") as f:
+                  b = f.read()
+              b = re.sub(r'minSdkVersion\s+[^\n]+', 'minSdkVersion 23', b)
+              extra_groovy = '''
+          android {
+            compileSdk 36
+            compileOptions {
+              coreLibraryDesugaringEnabled true
+            }
+            signingConfigs {
+              debug {
+                storeFile file("${System.getProperty('user.home')}/.android/debug.keystore")
+                storePassword "android"
+                keyAlias "androiddebugkey"
+                keyPassword "android"
+              }
+            }
+            buildTypes {
+              release {
+                signingConfig signingConfigs.debug
+              }
+            }
+          }
+          dependencies {
+            coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
+          }
+          '''
+              b += "\n" + "\n".join(line[10:] if line.startswith("          ") else line for line in extra_groovy.splitlines())
+              with open("android/app/build.gradle", "w") as f:
+                  f.write(b)
+
+          manifest_path = "android/app/src/main/AndroidManifest.xml"
+          if os.path.exists(manifest_path):
+              with open(manifest_path, "r") as f:
+                  m = f.read()
+              perms = ""
+              if "USE_BIOMETRIC" not in m:
+                  perms += '<uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>\n    '
+              if "REQUEST_INSTALL_PACKAGES" not in m:
+                  perms += '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n    '
+              if perms:
+                  m = m.replace("<application", perms + "<application", 1)
+              with open(manifest_path, "w") as f:
+                  f.write(m)
+
+          for kt_path in [
+              "android/app/src/main/kotlin/ye/su/iq_pharmacy39/MainActivity.kt",
+              "android/app/src/main/java/ye/su/iq_pharmacy39/MainActivity.kt"
+          ]:
+              if os.path.exists(kt_path):
+                  with open(kt_path, "w") as f:
+                      f.write("package ye.su.iq_pharmacy39\n\nimport io.flutter.embedding.android.FlutterFragmentActivity\n\nclass MainActivity : FlutterFragmentActivity()\n")
+          EOF
+
+      - name: Get Dependencies
+        run: flutter pub get
+
+      - name: Generate App Icons
+        run: dart run flutter_launcher_icons
+
+      - name: Build & Verify Signed Android APK
+        run: |
+          mkdir -p build/app/outputs/symbols
+          BUILD_NUM=$((1000 + ${{ github.run_number }}))
+          flutter build apk --release --build-name=1.3.0 --build-number=$BUILD_NUM --target-platform android-arm64 --obfuscate --split-debug-info=build/app/outputs/symbols
+          BUILD_TOOLS=$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 ! -name '*-*' | sort -V | tail -n 1)
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs build/app/outputs/flutter-apk/app-release.apk
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/IQ_Pharmacy39.apk
+          cp build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/IQ_Pharmacy39_v1.3.0_b${BUILD_NUM}.apk"
+
+      - name: Build iOS & Web PWA
+        run: flutter build web --release --base-href "/IQ_Pharmacy39/"
+
+      - name: Publish Direct APK to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: IQ_Pharmacy39 Official Release
+          files: |
+            build/app/outputs/flutter-apk/IQ_Pharmacy39.apk
+            build/app/outputs/flutter-apk/IQ_Pharmacy39_v1.3.0_b*.apk
+          overwrite_files: true
+
+      - name: Upload Web App for iOS
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy_ios_web:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
