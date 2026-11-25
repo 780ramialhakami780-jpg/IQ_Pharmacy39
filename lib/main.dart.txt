@@ -704,6 +704,8 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
       await prefs.setString('student_id', studentId);
       await prefs.setString('full_name', _foundStudent!['full_name']);
       await prefs.setBool('is_admin', _foundStudent!['is_admin'] ?? false);
+      final String rawGender = (_foundStudent!['gender'] ?? 'male').toString().trim().toLowerCase();
+      await prefs.setString('student_gender', rawGender == 'female' ? 'female' : 'male');
       if (_foundStudent!['university_email'] != null) {
         await prefs.setString('university_email', _foundStudent!['university_email'].toString());
       }

@@ -10,8 +10,6 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:dio/dio.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -38,6 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   String _studentName = '';
   String _studentId = '';
+  String _studentGender = 'male'; // 'male' or 'female'
   String _universityEmail = '';
   String _profilePhotoPath = '';
   String _profileAvatarUrl = '';
@@ -64,9 +63,11 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<String> _days = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
   int _selectedDayIndex = 0;
 
+  bool get _isFemale => _studentGender == 'female';
+
   String get _firstName {
     final parts = _studentName.trim().split(RegExp(r'\s+'));
-    return parts.isNotEmpty && parts.first.isNotEmpty ? parts.first : 'طالب';
+    return parts.isNotEmpty && parts.first.isNotEmpty ? parts.first : (_isFemale ? 'طالبة' : 'طالب');
   }
 
   @override
@@ -152,6 +153,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _studentName = prefs.getString('full_name') ?? 'طالب صيدلة';
       _studentId = prefs.getString('student_id') ?? '';
+      _studentGender = prefs.getString('student_gender') ?? 'male';
       _universityEmail = prefs.getString('university_email') ?? '';
       _profilePhotoPath = prefs.getString('profile_photo_path') ?? '';
       _profileAvatarUrl = prefs.getString('profile_avatar_url') ?? '';
@@ -169,6 +171,13 @@ class _HomeScreenState extends State<HomeScreen> {
       _announcements = jsonDecode(prefs.getString('cache_announcements') ?? '[]');
       _subjectReferences = jsonDecode(prefs.getString('cache_subject_references') ?? '[]');
     });
+  }
+
+  bool _matchesMySection(dynamic row) {
+    if (row is! Map) return true;
+    final target = (row['target_gender'] ?? 'all').toString().trim().toLowerCase();
+    if (target.isEmpty || target == 'all') return true;
+    return target == _studentGender;
   }
 
   Future<void> _syncOfflineAttendance(SharedPreferences prefs) async {
@@ -236,7 +245,7 @@ class _HomeScreenState extends State<HomeScreen> {
         try {
           final me = await client
               .from('students')
-              .select('is_admin, university_email, avatar_url')
+              .select('is_admin, university_email, avatar_url, gender')
               .eq('student_id', _studentId)
               .maybeSingle();
           if (me != null) {
@@ -246,6 +255,11 @@ class _HomeScreenState extends State<HomeScreen> {
             }
             if (me['avatar_url'] != null) {
               cloudAvatar = me['avatar_url'].toString();
+            }
+            if (me['gender'] != null && me['gender'].toString().trim().isNotEmpty) {
+              final g = me['gender'].toString().trim().toLowerCase();
+              _studentGender = (g == 'female') ? 'female' : 'male';
+              await prefs.setString('student_gender', _studentGender);
             }
           }
         } catch (_) {
@@ -291,6 +305,16 @@ class _HomeScreenState extends State<HomeScreen> {
       await prefs.setString('cache_announcements', jsonEncode(announcementsData));
       await prefs.setString('cache_subject_references', jsonEncode(refsData));
 
+      final filteredSchedule = scheduleData.where(_matchesMySection).toList();
+      final filteredAssignments = assignmentsData.where(_matchesMySection).toList();
+      final filteredNotifications = notificationsData.where(_matchesMySection).toList();
+      final filteredAnnouncements = announcementsData.where(_matchesMySection).toList();
+
+      await prefs.setString('cache_schedule', jsonEncode(filteredSchedule));
+      await prefs.setString('cache_assignments', jsonEncode(filteredAssignments));
+      await prefs.setString('cache_notifications', jsonEncode(filteredNotifications));
+      await prefs.setString('cache_announcements', jsonEncode(filteredAnnouncements));
+
       if (!mounted) return;
       setState(() {
         _isAdmin = cloudAdmin;
@@ -301,11 +325,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _headerLogoUrl = logoUrl;
         _calendarOccasions = occMap;
         _subjects = subjectsData;
-        _schedule = scheduleData;
-        _assignments = assignmentsData;
-        _notifications = notificationsData;
+        _schedule = filteredSchedule;
+        _assignments = filteredAssignments;
+        _notifications = filteredNotifications;
         _myAttendance = attendanceData;
-        _announcements = announcementsData;
+        _announcements = filteredAnnouncements;
         _subjectReferences = refsData;
       });
 
@@ -1755,7 +1779,12 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Icon(Icons.calendar_today_rounded, color: accent),
               const SizedBox(width: 10),
-              Text(AppPrefs.tr('جدول المحاضرات', 'Lecture Schedule'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              Text(
+                _isFemale
+                    ? AppPrefs.tr('جدول الطالبات', 'Female Schedule')
+                    : AppPrefs.tr('جدول الطلاب', 'Male Schedule'),
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
             ],
           ),
         ),
@@ -2014,6 +2043,7 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (_) => BatchChatScreen(
           studentId: _studentId,
           defaultName: _studentName,
+          studentGender: _studentGender,
           isAdmin: _isAdmin,
           myLocalPhotoPath: _profilePhotoPath,
           myAvatarUrl: _profileAvatarUrl,
@@ -2869,11 +2899,6 @@ class SoftwareUpdateScreen extends StatefulWidget {
 
 class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
   bool _checking = false;
-  bool _downloading = false;
-  double _downloadProgress = 0.0;
-  String _downloadStatus = '';
-  CancelToken? _cancelToken;
-
   bool _autoWifi = true;
   String _lastChecked = '';
   String _latestVersion = '';
@@ -2884,28 +2909,7 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
   void initState() {
     super.initState();
     _latestVersion = widget.currentVersion;
-    _cleanupOldCachedApks();
     _loadPrefsAndCheck();
-  }
-
-  @override
-  void dispose() {
-    _cancelToken?.cancel();
-    super.dispose();
-  }
-
-  /// حذف أي ملفات APK قديمة مخزنة مؤقتاً داخل التطبيق تلقائياً لمنع التعارض أو استهلاك المساحة
-  Future<void> _cleanupOldCachedApks() async {
-    if (kIsWeb) return;
-    try {
-      final dir = await getTemporaryDirectory();
-      final files = dir.listSync();
-      for (final f in files) {
-        if (f is File && f.path.toLowerCase().endsWith('.apk')) {
-          await f.delete();
-        }
-      }
-    } catch (_) {}
   }
 
   Future<void> _loadPrefsAndCheck() async {
@@ -2968,91 +2972,6 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
     }
   }
 
-  /// تنزيل التحديث داخل التطبيق مباشرة وحذف النسخ القديمة تلقائياً ثم فتح مثبت الحزم
-  Future<void> _downloadAndInstallInApp() async {
-    if (kIsWeb) {
-      final uri = Uri.tryParse(_updateUrl);
-      if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
-      return;
-    }
-    if (_downloading) return;
-
-    await _cleanupOldCachedApks();
-
-    setState(() {
-      _downloading = true;
-      _downloadProgress = 0.0;
-      _downloadStatus = AppPrefs.tr('جاري الاتصال بالخادم...', 'Connecting to server...');
-    });
-
-    try {
-      final dir = await getTemporaryDirectory();
-      final uniqueName = 'IQ_Pharmacy39_v${_latestVersion}_${DateTime.now().millisecondsSinceEpoch}.apk';
-      final savePath = '${dir.path}/$uniqueName';
-
-      // إضافة متغير لمنع الكاش وضمان سحب أحدث ملف من الخادم
-      final sep = _updateUrl.contains('?') ? '&' : '?';
-      final freshUrl = '$_updateUrl${sep}t=${DateTime.now().millisecondsSinceEpoch}';
-
-      _cancelToken = CancelToken();
-      await Dio().download(
-        freshUrl,
-        savePath,
-        cancelToken: _cancelToken,
-        options: Options(followRedirects: true, maxRedirects: 10),
-        onReceiveProgress: (received, total) {
-          if (!mounted) return;
-          setState(() {
-            if (total > 0) {
-              _downloadProgress = received / total;
-              final recMb = (received / (1024 * 1024)).toStringAsFixed(1);
-              final totMb = (total / (1024 * 1024)).toStringAsFixed(1);
-              _downloadStatus = '${(_downloadProgress * 100).round()}%  ($recMb / $totMb MB)';
-            } else {
-              final recMb = (received / (1024 * 1024)).toStringAsFixed(1);
-              _downloadStatus = '${AppPrefs.tr('تم تحميل:', 'Downloaded:')} $recMb MB';
-            }
-          });
-        },
-      );
-
-      if (!mounted) return;
-      setState(() {
-        _downloading = false;
-        _downloadStatus = AppPrefs.tr('اكتمل التحميل، جاري فتح التثبيت...', 'Download complete, opening installer...');
-      });
-
-      final result = await OpenFilex.open(savePath, type: 'application/vnd.android.package-archive');
-      if (result.type != ResultType.done && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              AppPrefs.tr(
-                'يرجى السماح للتطبيق بتثبيت التحديثات من إعدادات الأمان في هاتفك ثم المحاولة مرة أخرى.',
-                'Please allow installing unknown apps in phone settings and try again.',
-              ),
-            ),
-            backgroundColor: Colors.orange,
-            duration: const Duration(seconds: 5),
-          ),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _downloading = false;
-        _downloadStatus = '';
-      });
-      if (e is DioException && CancelToken.isCancel(e)) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(AppPrefs.tr('تعذر إكمال التحميل داخل التطبيق، يمكنك التحميل عبر المتصفح بالأسفل.', 'In-app download failed, try browser fallback below.')),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final cardBg = Theme.of(context).cardColor;
@@ -3100,71 +3019,24 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
                           : AppPrefs.tr('اضغط للفحص اليدوي', 'Tap to check manually'),
                       style: const TextStyle(fontSize: 12, color: Colors.grey),
                     ),
-                    onTap: _downloading ? null : _checkForUpdate,
+                    onTap: _checkForUpdate,
                   ),
                 ),
-                if (hasNewer || _downloading) ...[
+                if (hasNewer) ...[
                   const SizedBox(height: 10),
-                  if (_downloading)
-                    Card(
-                      color: cardBg,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  AppPrefs.tr('جاري تنزيل التحديث...', 'Downloading update...'),
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                ),
-                                TextButton(
-                                  onPressed: () => _cancelToken?.cancel(),
-                                  child: Text(AppPrefs.tr('إلغاء', 'Cancel'), style: const TextStyle(color: Colors.redAccent)),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: LinearProgressIndicator(
-                                value: _downloadProgress > 0 ? _downloadProgress : null,
-                                minHeight: 8,
-                                color: accent,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(_downloadStatus, style: TextStyle(fontSize: 12, color: accent, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                      ),
-                    )
-                  else ...[
-                    SizedBox(
-                      width: double.infinity,
-                      height: 48,
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
-                        icon: const Icon(Icons.download_rounded),
-                        label: Text(AppPrefs.tr('تنزيل وتثبيت التحديث مباشرة', 'Download & Install Directly'), style: const TextStyle(fontWeight: FontWeight.bold)),
-                        onPressed: _downloadAndInstallInApp,
-                      ),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                      icon: const Icon(Icons.download_rounded),
+                      label: Text(AppPrefs.tr('تنزيل وتثبيت التحديث الآن', 'Download and install'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        final uri = Uri.tryParse(_updateUrl);
+                        if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
+                      },
                     ),
-                    const SizedBox(height: 6),
-                    Center(
-                      child: TextButton.icon(
-                        icon: const Icon(Icons.open_in_browser_rounded, size: 16),
-                        label: Text(AppPrefs.tr('أو فتح رابط التحميل في المتصفح', 'Or open in browser'), style: const TextStyle(fontSize: 12)),
-                        onPressed: () {
-                          final sep = _updateUrl.contains('?') ? '&' : '?';
-                          final uri = Uri.tryParse('$_updateUrl${sep}t=${DateTime.now().millisecondsSinceEpoch}');
-                          if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
-                        },
-                      ),
-                    ),
-                  ],
+                  ),
                 ],
                 const SizedBox(height: 12),
                 Card(
@@ -4118,6 +3990,7 @@ class AppGlobalSearchDelegate extends SearchDelegate {
 class BatchChatScreen extends StatefulWidget {
   final String studentId;
   final String defaultName;
+  final String studentGender;
   final bool isAdmin;
   final String myLocalPhotoPath;
   final String myAvatarUrl;
@@ -4126,6 +3999,7 @@ class BatchChatScreen extends StatefulWidget {
     super.key,
     required this.studentId,
     required this.defaultName,
+    this.studentGender = 'male',
     this.isAdmin = false,
     this.myLocalPhotoPath = '',
     this.myAvatarUrl = '',
@@ -4192,6 +4066,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
       final rows = await Supabase.instance.client
           .from('chat_messages')
           .select()
+          .eq('gender', widget.studentGender)
           .order('created_at', ascending: true)
           .limit(150);
 
@@ -4370,6 +4245,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     final payload = <String, dynamic>{
       'student_id': widget.studentId,
       'nickname': _nickname,
+      'gender': widget.studentGender,
       'message': text,
     };
 
@@ -4386,6 +4262,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
         await Supabase.instance.client.from('chat_messages').insert({
           'student_id': widget.studentId,
           'nickname': _nickname,
+          'gender': widget.studentGender,
           'message': text,
         });
       } catch (_) {}
@@ -4426,7 +4303,12 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(AppPrefs.tr('دردشة الدفعة', 'Batch Chat'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(
+              widget.studentGender == 'female'
+                  ? AppPrefs.tr('دردشة شطر الطالبات', 'Female Batch Chat')
+                  : AppPrefs.tr('دردشة شطر الطلاب', 'Male Batch Chat'),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
             Text(
               AppPrefs.tr('اضغط مطولاً على أي رسالة للرد أو التفاعل', 'Long-press any message to reply or react'),
               style: const TextStyle(fontSize: 11, color: Colors.grey),
@@ -4952,10 +4834,18 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
       final allow = settingRes != null && settingRes['value'].toString().toLowerCase() == 'true';
 
       List students = [];
-      if (_isOwner || (widget.isAdmin && allow)) {
+      if (_isOwner) {
         students = await client
             .from('students')
-            .select('student_id, full_name')
+            .select('student_id, full_name, gender')
+            .order('full_name');
+      } else if (widget.isAdmin && allow) {
+        final prefs = await SharedPreferences.getInstance();
+        final myGender = prefs.getString('student_gender') ?? 'male';
+        students = await client
+            .from('students')
+            .select('student_id, full_name, gender')
+            .eq('gender', myGender)
             .order('full_name');
       }
 
