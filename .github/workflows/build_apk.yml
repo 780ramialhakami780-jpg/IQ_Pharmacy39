@@ -27,6 +27,7 @@ jobs:
           keytool -importkeystore \
             -srckeystore /tmp/temp.jks \
             -srcstorepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            -srckeypass "${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD }}" \
             -srcalias "${{ secrets.KEY_ALIAS }}" \
             -destkeystore ~/.android/debug.keystore \
             -deststorepass android \
@@ -67,7 +68,14 @@ jobs:
                   count=1
               )
               b = re.sub(r'minSdk\s*=\s*[^\n]+', 'minSdk = 23', b)
-              b = re.sub(r'compileSdk\s*=\s*[^\n]+', 'compileSdk = 36', b)
+              b = re.sub(r'targetSdk\s*=\s*[^\n]+', 'targetSdk = 34', b)
+              b = re.sub(r'compileSdk\s*=\s*[^\n]+', 'compileSdk = 35', b)
+              b = re.sub(
+                  r'(buildTypes\s*\{\s*release\s*\{)',
+                  r'\1\n            isMinifyEnabled = false\n            isShrinkResources = false',
+                  b,
+                  count=1
+              )
               b += '\nandroid {\n    compileOptions {\n        isCoreLibraryDesugaringEnabled = true\n    }\n}\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n'
               with open("android/app/build.gradle.kts", "w") as f:
                   f.write(b)
@@ -75,7 +83,14 @@ jobs:
               with open("android/app/build.gradle", "r") as f:
                   b = f.read()
               b = re.sub(r'minSdkVersion\s+[^\n]+', 'minSdkVersion 23', b)
-              b = re.sub(r'compileSdkVersion\s+[^\n]+', 'compileSdkVersion 36', b)
+              b = re.sub(r'targetSdkVersion\s+[^\n]+', 'targetSdkVersion 34', b)
+              b = re.sub(r'compileSdkVersion\s+[^\n]+', 'compileSdkVersion 35', b)
+              b = re.sub(
+                  r'(buildTypes\s*\{\s*release\s*\{)',
+                  r'\1\n            minifyEnabled false\n            shrinkResources false',
+                  b,
+                  count=1
+              )
               b += '\nandroid {\n    compileOptions {\n        coreLibraryDesugaringEnabled true\n    }\n}\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"\n}\n'
               with open("android/app/build.gradle", "w") as f:
                   f.write(b)
@@ -111,10 +126,10 @@ jobs:
 
       - name: Build & Verify Signed Arm64 APK (35MB)
         run: |
-          mkdir -p build/app/outputs/symbols
           BUILD_NUM=$((1000 + ${{ github.run_number }}))
           flutter build apk --release --build-name=1.3.0 --build-number=$BUILD_NUM --target-platform android-arm64
           BUILD_TOOLS=$(find "$ANDROID_SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 ! -name '*-*' | sort -V | tail -n 1)
+          "$BUILD_TOOLS/aapt2" dump badging build/app/outputs/flutter-apk/app-release.apk | head -n 5
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs build/app/outputs/flutter-apk/app-release.apk
           cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/IQ_Pharmacy39.apk
           cp build/app/outputs/flutter-apk/app-release.apk "build/app/outputs/flutter-apk/IQ_Pharmacy39_v1.3.0_b${BUILD_NUM}.apk"
