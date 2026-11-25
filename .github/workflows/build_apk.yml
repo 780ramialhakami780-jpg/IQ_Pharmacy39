@@ -69,7 +69,7 @@ jobs:
               )
               b = re.sub(r'minSdk\s*=\s*[^\n]+', 'minSdk = 23', b)
               b = re.sub(r'targetSdk\s*=\s*[^\n]+', 'targetSdk = 34', b)
-              b = re.sub(r'compileSdk\s*=\s*[^\n]+', 'compileSdk = 35', b)
+              b = re.sub(r'compileSdk\s*=\s*[^\n]+', 'compileSdk = 36', b)
               b = re.sub(
                   r'(buildTypes\s*\{\s*release\s*\{)',
                   r'\1\n            isMinifyEnabled = false\n            isShrinkResources = false',
@@ -84,7 +84,7 @@ jobs:
                   b = f.read()
               b = re.sub(r'minSdkVersion\s+[^\n]+', 'minSdkVersion 23', b)
               b = re.sub(r'targetSdkVersion\s+[^\n]+', 'targetSdkVersion 34', b)
-              b = re.sub(r'compileSdkVersion\s+[^\n]+', 'compileSdkVersion 35', b)
+              b = re.sub(r'compileSdkVersion\s+[^\n]+', 'compileSdkVersion 36', b)
               b = re.sub(
                   r'(buildTypes\s*\{\s*release\s*\{)',
                   r'\1\n            minifyEnabled false\n            shrinkResources false',
