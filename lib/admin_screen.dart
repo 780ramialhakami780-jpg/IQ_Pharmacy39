@@ -209,6 +209,7 @@ class _AdminScreenState extends State<AdminScreen> {
     final annImgUrlCtrl = TextEditingController();
     final annActionUrlCtrl = TextEditingController();
     final annPollOptionsCtrl = TextEditingController();
+    String annTargetGender = 'all';
 
     final occDateCtrl = TextEditingController();
     final occTitleCtrl = TextEditingController();
@@ -216,13 +217,16 @@ class _AdminScreenState extends State<AdminScreen> {
     final urgentCtrl = TextEditingController();
     final notifTitle = TextEditingController();
     final notifBody = TextEditingController();
+    String notifTargetGender = 'all';
 
     final taskSubj = TextEditingController();
     final taskTitle = TextEditingController();
     final taskDetails = TextEditingController();
     final taskDate = TextEditingController(text: '2026-11-25');
+    String taskTargetGender = 'all';
 
-    return ListView(
+    return StatefulBuilder(
+      builder: (context, setInnerState) => ListView(
       padding: const EdgeInsets.all(16),
       children: [
         const Text('🖼️ نشر إعلان أو تصويت دفعة في الشريط العلوي', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
@@ -280,6 +284,17 @@ class _AdminScreenState extends State<AdminScreen> {
         ),
         const SizedBox(height: 8),
         TextField(controller: annActionUrlCtrl, decoration: const InputDecoration(labelText: 'رابط خارجي لزر "فتح الرابط" (اختياري)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String>(
+          value: annTargetGender,
+          decoration: const InputDecoration(labelText: 'الفئة المستهدفة', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'all', child: Text('عام للدفعة (طلاب وطالبات)')),
+            DropdownMenuItem(value: 'male', child: Text('شطر الطلاب فقط (بنين)')),
+            DropdownMenuItem(value: 'female', child: Text('شطر الطالبات فقط (بنات)')),
+          ],
+          onChanged: (v) => setInnerState(() => annTargetGender = v ?? 'all'),
+        ),
         const SizedBox(height: 10),
         ElevatedButton.icon(
           style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
@@ -310,6 +325,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 'action_url': annActionUrlCtrl.text.trim(),
                 'poll_options': pollLines,
                 'poll_votes': {},
+                'target_gender': annTargetGender,
                 'is_active': true,
               });
               await _fetchInitialData();
@@ -444,6 +460,17 @@ class _AdminScreenState extends State<AdminScreen> {
         TextField(controller: notifTitle, decoration: const InputDecoration(labelText: 'عنوان الإشعار', border: OutlineInputBorder())),
         const SizedBox(height: 10),
         TextField(controller: notifBody, maxLines: 3, decoration: const InputDecoration(labelText: 'نص الإشعار', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String>(
+          value: notifTargetGender,
+          decoration: const InputDecoration(labelText: 'الفئة المستهدفة', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'all', child: Text('عام للدفعة (طلاب وطالبات)')),
+            DropdownMenuItem(value: 'male', child: Text('شطر الطلاب فقط (بنين)')),
+            DropdownMenuItem(value: 'female', child: Text('شطر الطالبات فقط (بنات)')),
+          ],
+          onChanged: (v) => setInnerState(() => notifTargetGender = v ?? 'all'),
+        ),
         const SizedBox(height: 10),
         ElevatedButton.icon(
           icon: const Icon(Icons.send),
@@ -457,6 +484,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 'title': notifTitle.text.trim(),
                 'body': notifBody.text.trim(),
                 'sender_name': widget.adminName,
+                'target_gender': notifTargetGender,
               });
               _showMsg('تم إرسال الإشعار لجميع الطلاب بنجاح');
             } catch (e) {
@@ -476,6 +504,17 @@ class _AdminScreenState extends State<AdminScreen> {
         TextField(controller: taskDetails, decoration: const InputDecoration(labelText: 'التفاصيل المطلوبة', border: OutlineInputBorder())),
         const SizedBox(height: 10),
         TextField(controller: taskDate, decoration: const InputDecoration(labelText: 'موعد التسليم (YYYY-MM-DD)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<String>(
+          value: taskTargetGender,
+          decoration: const InputDecoration(labelText: 'الفئة المستهدفة', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 'all', child: Text('عام للدفعة (طلاب وطالبات)')),
+            DropdownMenuItem(value: 'male', child: Text('شطر الطلاب فقط (بنين)')),
+            DropdownMenuItem(value: 'female', child: Text('شطر الطالبات فقط (بنات)')),
+          ],
+          onChanged: (v) => setInnerState(() => taskTargetGender = v ?? 'all'),
+        ),
         const SizedBox(height: 10),
         ElevatedButton.icon(
           icon: const Icon(Icons.add_task),
@@ -489,6 +528,7 @@ class _AdminScreenState extends State<AdminScreen> {
                 'title': taskTitle.text.trim(),
                 'details': taskDetails.text.trim(),
                 'due_date': taskDate.text.trim(),
+                'target_gender': taskTargetGender,
               });
               _showMsg('تمت إضافة التكليف بنجاح');
             } catch (_) {
@@ -499,6 +539,7 @@ class _AdminScreenState extends State<AdminScreen> {
           },
         ),
       ],
+    ),
     );
   }
 
@@ -728,6 +769,7 @@ class _AdminScreenState extends State<AdminScreen> {
 
   Widget _buildScheduleAndAttendanceTab() {
     String selectedDay = 'السبت';
+    String schedTargetGender = 'male';
     final orderCtrl = TextEditingController(text: 'المحاضرة الأولى');
     final timeCtrl = TextEditingController(text: '08:00 - 10:00');
     final subjCtrl = TextEditingController();
@@ -813,6 +855,17 @@ class _AdminScreenState extends State<AdminScreen> {
             TextField(controller: hallCtrl, decoration: const InputDecoration(labelText: 'القاعة', border: OutlineInputBorder())),
             const SizedBox(height: 8),
             TextField(controller: docCtrl, decoration: const InputDecoration(labelText: 'اسم الدكتور', border: OutlineInputBorder())),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<String>(
+              value: schedTargetGender,
+              decoration: const InputDecoration(labelText: 'الجدول خاص بـ', border: OutlineInputBorder()),
+              items: const [
+                DropdownMenuItem(value: 'male', child: Text('جدول الطلاب (بنين)')),
+                DropdownMenuItem(value: 'female', child: Text('جدول الطالبات (بنات)')),
+                DropdownMenuItem(value: 'all', child: Text('مشترك (طلاب وطالبات)')),
+              ],
+              onChanged: (v) => setInnerState(() => schedTargetGender = v ?? 'male'),
+            ),
             const SizedBox(height: 10),
             ElevatedButton(
               onPressed: () async {
@@ -826,6 +879,7 @@ class _AdminScreenState extends State<AdminScreen> {
                     'subject_name': subjCtrl.text.trim(),
                     'hall': hallCtrl.text.trim(),
                     'doctor_name': docCtrl.text.trim(),
+                    'target_gender': schedTargetGender,
                   });
                   _showMsg('تمت إضافة المحاضرة للجدول');
                 } catch (_) {
@@ -909,6 +963,7 @@ class _AdminScreenState extends State<AdminScreen> {
     final dirTitleCtrl = TextEditingController();
     final dirValueCtrl = TextEditingController();
     String dirType = 'رابط';
+    String dirTargetGender = 'all';
 
     return StatefulBuilder(
       builder: (context, setInnerState) => ListView(
@@ -1121,13 +1176,36 @@ class _AdminScreenState extends State<AdminScreen> {
             final sid = (st['student_id'] ?? '').toString().trim();
             final hasDevice = st['device_id'] != null && st['device_id'].toString().isNotEmpty;
             final isProtected = sid == _ownerId || st['is_admin'] == true;
+            final stGender = (st['gender'] ?? 'male').toString().trim().toLowerCase();
 
             return Card(
               margin: const EdgeInsets.only(bottom: 8),
               child: ListTile(
                 title: Text(st['full_name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                subtitle: Text(
-                  'رقم القيد: $sid • ${isProtected ? 'حساب مشرف/مالك محمي' : (hasDevice ? 'مرتبط بهاتف' : 'غير مرتبط')}',
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'رقم القيد: $sid • ${isProtected ? 'حساب مشرف/مالك محمي' : (hasDevice ? 'مرتبط بهاتف' : 'غير مرتبط')}',
+                    ),
+                    const SizedBox(height: 4),
+                    InkWell(
+                      onTap: () async {
+                        final nextG = stGender == 'female' ? 'male' : 'female';
+                        try {
+                          await _client.from('students').update({'gender': nextG}).eq('student_id', sid);
+                          setInnerState(() => st['gender'] = nextG);
+                          _showMsg('تم تغيير الشطر إلى: ${nextG == 'female' ? 'طالبة' : 'طالب'} ✓');
+                        } catch (_) {
+                          _showMsg('تعذر تحديث الشطر', isError: true);
+                        }
+                      },
+                      child: Text(
+                        'الشطر: ${stGender == 'female' ? '👩‍🎓 طالبة' : '👨‍🎓 طالب'} (اضغط للتبديل)',
+                        style: const TextStyle(fontSize: 12, color: Color(0xFF4FD1C5), fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
                 ),
                 trailing: isProtected
                     ? const Chip(
@@ -1166,6 +1244,17 @@ class _AdminScreenState extends State<AdminScreen> {
             ],
             onChanged: (v) => setInnerState(() => dirType = v ?? 'رابط'),
           ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: dirTargetGender,
+            decoration: const InputDecoration(labelText: 'يظهر لـ', border: OutlineInputBorder()),
+            items: const [
+              DropdownMenuItem(value: 'all', child: Text('الجميع (طلاب وطالبات)')),
+              DropdownMenuItem(value: 'male', child: Text('شطر الطلاب فقط (بنين)')),
+              DropdownMenuItem(value: 'female', child: Text('شطر الطالبات فقط (بنات)')),
+            ],
+            onChanged: (v) => setInnerState(() => dirTargetGender = v ?? 'all'),
+          ),
           const SizedBox(height: 10),
           ElevatedButton.icon(
             icon: const Icon(Icons.add_link),
@@ -1183,6 +1272,7 @@ class _AdminScreenState extends State<AdminScreen> {
                   'title': dirTitleCtrl.text.trim(),
                   'value': dirValueCtrl.text.trim(),
                   'type': dirType,
+                  'target_gender': dirTargetGender,
                 });
                 await _client.from('app_settings').upsert({'key': 'batch_directory', 'value': jsonEncode(currentList)});
                 _showMsg('تمت الإضافة إلى دليل الدفعة بنجاح');

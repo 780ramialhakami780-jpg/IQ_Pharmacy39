@@ -5,10 +5,10 @@ import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'app_prefs.dart';
 
 class BiometricHelper {
   static final LocalAuthentication _auth = LocalAuthentication();
+  static bool isAuthenticating = false;
 
   static Future<bool> isBiometricAvailable() async {
     if (kIsWeb) return false;
@@ -23,6 +23,8 @@ class BiometricHelper {
 
   static Future<bool> authenticate({required String reason}) async {
     if (kIsWeb) return false;
+    if (isAuthenticating) return false;
+    isAuthenticating = true;
     try {
       final available = await isBiometricAvailable();
       if (!available) return false;
@@ -35,16 +37,18 @@ class BiometricHelper {
       );
     } catch (_) {
       return false;
+    } finally {
+      await Future.delayed(const Duration(milliseconds: 350));
+      isAuthenticating = false;
     }
   }
 }
 
 class StartupManager {
-  static const int currentBuildNumber = 103;
+  static const int currentBuildNumber = 104;
   static bool _checkedThisSession = false;
-  static bool _appUnlockedThisSession = false;
 
-  /// نافذة تأكيد الخروج بتصميم مطابق للصورة ومتناسق مع ثيم التطبيق
+  /// نافذة تأكيد الخروج بتصميم متناسق واتجاه عربي صحيح لعلامة الاستفهام
   static Future<bool> showExitDialog(BuildContext context) async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cardColor = isDark ? const Color(0xFF1E2025) : Colors.white;
@@ -56,86 +60,89 @@ class StartupManager {
       context: context,
       barrierDismissible: true,
       barrierColor: Colors.black.withOpacity(0.65),
-      builder: (ctx) => Dialog(
-        backgroundColor: cardColor,
-        elevation: 8,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 26),
-            Text(
-              'تأكيد!',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: titleColor,
-              ),
-            ),
-            const SizedBox(height: 14),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Text(
-                'هل تريد الخروج من تطبيق\nIQ_Pharmacy39؟',
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: Dialog(
+          backgroundColor: cardColor,
+          elevation: 8,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 26),
+              Text(
+                'تأكيد!',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 15,
-                  height: 1.55,
-                  color: bodyColor,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: titleColor,
                 ),
               ),
-            ),
-            const SizedBox(height: 24),
-            Divider(height: 1, thickness: 1, color: dividerColor),
-            SizedBox(
-              height: 52,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: InkWell(
-                      borderRadius: const BorderRadius.only(
-                        bottomRight: Radius.circular(18),
-                      ),
-                      onTap: () => Navigator.of(ctx).pop(true),
-                      child: Center(
-                        child: Text(
-                          'حسناً',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: titleColor,
-                          ),
-                        ),
-                      ),
-                    ),
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Text(
+                  'هل تريد الخروج من تطبيق\n\u200FIQ_Pharmacy39؟',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 15,
+                    height: 1.55,
+                    color: bodyColor,
                   ),
-                  VerticalDivider(width: 1, thickness: 1, color: dividerColor),
-                  Expanded(
-                    child: InkWell(
-                      borderRadius: const BorderRadius.only(
-                        bottomLeft: Radius.circular(18),
-                      ),
-                      onTap: () => Navigator.of(ctx).pop(false),
-                      child: Center(
-                        child: Text(
-                          'إلغاء',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                            color: bodyColor,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 24),
+              Divider(height: 1, thickness: 1, color: dividerColor),
+              SizedBox(
+                height: 52,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        borderRadius: const BorderRadius.only(
+                          bottomRight: Radius.circular(18),
+                        ),
+                        onTap: () => Navigator.of(ctx).pop(true),
+                        child: Center(
+                          child: Text(
+                            'حسناً',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: titleColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    VerticalDivider(width: 1, thickness: 1, color: dividerColor),
+                    Expanded(
+                      child: InkWell(
+                        borderRadius: const BorderRadius.only(
+                          bottomLeft: Radius.circular(18),
+                        ),
+                        onTap: () => Navigator.of(ctx).pop(false),
+                        child: Center(
+                          child: Text(
+                            'إلغاء',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w500,
+                              color: bodyColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -147,139 +154,9 @@ class StartupManager {
     return false;
   }
 
-  /// شاشة قفل التطبيق بالبصمة ورمز المرور عند التشغيل
-  static Future<void> verifyAppLockIfNeeded(BuildContext context) async {
-    if (_appUnlockedThisSession) return;
-    if (!AppPrefs.pinEnabled && !AppPrefs.biometricEnabled) {
-      _appUnlockedThisSession = true;
-      return;
-    }
-    if (!context.mounted) return;
-
-    final pinCtrl = TextEditingController();
-    bool errorText = false;
-
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      barrierColor: Colors.black.withOpacity(0.92),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLockState) {
-          final accent = Theme.of(ctx).colorScheme.primary;
-          final cardBg = Theme.of(ctx).cardColor;
-
-          Future<void> triggerBiometric() async {
-            final ok = await BiometricHelper.authenticate(
-              reason: AppPrefs.tr('استخدم البصمة لفتح تطبيق IQ_Pharmacy39', 'Use biometric to unlock IQ_Pharmacy39'),
-            );
-            if (ok && ctx.mounted) {
-              _appUnlockedThisSession = true;
-              Navigator.of(ctx).pop();
-            }
-          }
-
-          if (AppPrefs.biometricEnabled && !_appUnlockedThisSession) {
-            Future.microtask(() async {
-              if (!_appUnlockedThisSession) {
-                final ok = await BiometricHelper.authenticate(
-                  reason: AppPrefs.tr('استخدم البصمة لفتح تطبيق IQ_Pharmacy39', 'Use biometric to unlock IQ_Pharmacy39'),
-                );
-                if (ok && ctx.mounted) {
-                  _appUnlockedThisSession = true;
-                  Navigator.of(ctx).pop();
-                }
-              }
-            });
-          }
-
-          return PopScope(
-            canPop: false,
-            child: AlertDialog(
-              backgroundColor: cardBg,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              title: Column(
-                children: [
-                  Icon(Icons.lock_rounded, color: accent, size: 38),
-                  const SizedBox(height: 8),
-                  Text(
-                    AppPrefs.tr('التطبيق مقفل', 'App Locked'),
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-                  ),
-                ],
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (AppPrefs.pinEnabled && AppPrefs.appPin.isNotEmpty) ...[
-                    Text(
-                      AppPrefs.tr('أدخل رمز المرور (PIN) أو استخدم البصمة:', 'Enter PIN or use biometric:'),
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: pinCtrl,
-                      keyboardType: TextInputType.number,
-                      obscureText: true,
-                      maxLength: 6,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 22, letterSpacing: 6),
-                      decoration: InputDecoration(
-                        counterText: '',
-                        hintText: '••••',
-                        errorText: errorText ? AppPrefs.tr('الرمز غير صحيح', 'Wrong PIN') : null,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
-                        onPressed: () {
-                          if (pinCtrl.text.trim() == AppPrefs.appPin) {
-                            _appUnlockedThisSession = true;
-                            Navigator.of(ctx).pop();
-                          } else {
-                            setLockState(() => errorText = true);
-                          }
-                        },
-                        child: Text(AppPrefs.tr('فتح القفل', 'Unlock'), style: const TextStyle(fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                  ],
-                  if (AppPrefs.biometricEnabled) ...[
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          side: BorderSide(color: accent),
-                        ),
-                        icon: Icon(Icons.fingerprint_rounded, color: accent, size: 26),
-                        label: Text(
-                          AppPrefs.tr('فتح بالبصمة', 'Unlock with Fingerprint'),
-                          style: TextStyle(color: accent, fontWeight: FontWeight.bold),
-                        ),
-                        onPressed: triggerBiometric,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  /// فحص قفل التطبيق والتحديث الإجباري والإعلان التلقائي عند فتح التطبيق
+  /// فحص التحديث الإجباري والإعلان التلقائي عند فتح التطبيق (قفل التطبيق يتم عبر UnifiedAppLockScreen في main.dart دون تكرار)
   static Future<void> checkOnStartup(BuildContext context) async {
-    await verifyAppLockIfNeeded(context);
     if (!context.mounted) return;
-
     if (_checkedThisSession) return;
     _checkedThisSession = true;
 

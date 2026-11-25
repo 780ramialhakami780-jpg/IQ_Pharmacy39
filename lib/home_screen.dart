@@ -36,6 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
   String _studentName = '';
   String _studentId = '';
+  String _studentGender = 'male'; // 'male' or 'female'
   String _universityEmail = '';
   String _profilePhotoPath = '';
   String _profileAvatarUrl = '';
@@ -62,9 +63,11 @@ class _HomeScreenState extends State<HomeScreen> {
   final List<String> _days = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس'];
   int _selectedDayIndex = 0;
 
+  bool get _isFemale => _studentGender == 'female';
+
   String get _firstName {
     final parts = _studentName.trim().split(RegExp(r'\s+'));
-    return parts.isNotEmpty && parts.first.isNotEmpty ? parts.first : 'طالب';
+    return parts.isNotEmpty && parts.first.isNotEmpty ? parts.first : (_isFemale ? 'طالبة' : 'طالب');
   }
 
   @override
@@ -150,6 +153,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _studentName = prefs.getString('full_name') ?? 'طالب صيدلة';
       _studentId = prefs.getString('student_id') ?? '';
+      _studentGender = prefs.getString('student_gender') ?? 'male';
       _universityEmail = prefs.getString('university_email') ?? '';
       _profilePhotoPath = prefs.getString('profile_photo_path') ?? '';
       _profileAvatarUrl = prefs.getString('profile_avatar_url') ?? '';
@@ -167,6 +171,13 @@ class _HomeScreenState extends State<HomeScreen> {
       _announcements = jsonDecode(prefs.getString('cache_announcements') ?? '[]');
       _subjectReferences = jsonDecode(prefs.getString('cache_subject_references') ?? '[]');
     });
+  }
+
+  bool _matchesMySection(dynamic row) {
+    if (row is! Map) return true;
+    final target = (row['target_gender'] ?? 'all').toString().trim().toLowerCase();
+    if (target.isEmpty || target == 'all') return true;
+    return target == _studentGender;
   }
 
   Future<void> _syncOfflineAttendance(SharedPreferences prefs) async {
@@ -234,7 +245,7 @@ class _HomeScreenState extends State<HomeScreen> {
         try {
           final me = await client
               .from('students')
-              .select('is_admin, university_email, avatar_url')
+              .select('is_admin, university_email, avatar_url, gender')
               .eq('student_id', _studentId)
               .maybeSingle();
           if (me != null) {
@@ -244,6 +255,11 @@ class _HomeScreenState extends State<HomeScreen> {
             }
             if (me['avatar_url'] != null) {
               cloudAvatar = me['avatar_url'].toString();
+            }
+            if (me['gender'] != null && me['gender'].toString().trim().isNotEmpty) {
+              final g = me['gender'].toString().trim().toLowerCase();
+              _studentGender = (g == 'female') ? 'female' : 'male';
+              await prefs.setString('student_gender', _studentGender);
             }
           }
         } catch (_) {
@@ -289,6 +305,16 @@ class _HomeScreenState extends State<HomeScreen> {
       await prefs.setString('cache_announcements', jsonEncode(announcementsData));
       await prefs.setString('cache_subject_references', jsonEncode(refsData));
 
+      final filteredSchedule = scheduleData.where(_matchesMySection).toList();
+      final filteredAssignments = assignmentsData.where(_matchesMySection).toList();
+      final filteredNotifications = notificationsData.where(_matchesMySection).toList();
+      final filteredAnnouncements = announcementsData.where(_matchesMySection).toList();
+
+      await prefs.setString('cache_schedule', jsonEncode(filteredSchedule));
+      await prefs.setString('cache_assignments', jsonEncode(filteredAssignments));
+      await prefs.setString('cache_notifications', jsonEncode(filteredNotifications));
+      await prefs.setString('cache_announcements', jsonEncode(filteredAnnouncements));
+
       if (!mounted) return;
       setState(() {
         _isAdmin = cloudAdmin;
@@ -299,11 +325,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _headerLogoUrl = logoUrl;
         _calendarOccasions = occMap;
         _subjects = subjectsData;
-        _schedule = scheduleData;
-        _assignments = assignmentsData;
-        _notifications = notificationsData;
+        _schedule = filteredSchedule;
+        _assignments = filteredAssignments;
+        _notifications = filteredNotifications;
         _myAttendance = attendanceData;
-        _announcements = announcementsData;
+        _announcements = filteredAnnouncements;
         _subjectReferences = refsData;
       });
 
@@ -1753,7 +1779,12 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               Icon(Icons.calendar_today_rounded, color: accent),
               const SizedBox(width: 10),
-              Text(AppPrefs.tr('جدول المحاضرات', 'Lecture Schedule'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              Text(
+                _isFemale
+                    ? AppPrefs.tr('جدول الطالبات', 'Female Schedule')
+                    : AppPrefs.tr('جدول الطلاب', 'Male Schedule'),
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
             ],
           ),
         ),
@@ -2012,6 +2043,7 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (_) => BatchChatScreen(
           studentId: _studentId,
           defaultName: _studentName,
+          studentGender: _studentGender,
           isAdmin: _isAdmin,
           myLocalPhotoPath: _profilePhotoPath,
           myAvatarUrl: _profileAvatarUrl,
@@ -3958,6 +3990,7 @@ class AppGlobalSearchDelegate extends SearchDelegate {
 class BatchChatScreen extends StatefulWidget {
   final String studentId;
   final String defaultName;
+  final String studentGender;
   final bool isAdmin;
   final String myLocalPhotoPath;
   final String myAvatarUrl;
@@ -3966,6 +3999,7 @@ class BatchChatScreen extends StatefulWidget {
     super.key,
     required this.studentId,
     required this.defaultName,
+    this.studentGender = 'male',
     this.isAdmin = false,
     this.myLocalPhotoPath = '',
     this.myAvatarUrl = '',
@@ -4032,6 +4066,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
       final rows = await Supabase.instance.client
           .from('chat_messages')
           .select()
+          .eq('gender', widget.studentGender)
           .order('created_at', ascending: true)
           .limit(150);
 
@@ -4210,6 +4245,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
     final payload = <String, dynamic>{
       'student_id': widget.studentId,
       'nickname': _nickname,
+      'gender': widget.studentGender,
       'message': text,
     };
 
@@ -4226,6 +4262,7 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
         await Supabase.instance.client.from('chat_messages').insert({
           'student_id': widget.studentId,
           'nickname': _nickname,
+          'gender': widget.studentGender,
           'message': text,
         });
       } catch (_) {}
@@ -4266,7 +4303,12 @@ class _BatchChatScreenState extends State<BatchChatScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(AppPrefs.tr('دردشة الدفعة', 'Batch Chat'), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Text(
+              widget.studentGender == 'female'
+                  ? AppPrefs.tr('دردشة شطر الطالبات', 'Female Batch Chat')
+                  : AppPrefs.tr('دردشة شطر الطلاب', 'Male Batch Chat'),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
             Text(
               AppPrefs.tr('اضغط مطولاً على أي رسالة للرد أو التفاعل', 'Long-press any message to reply or react'),
               style: const TextStyle(fontSize: 11, color: Colors.grey),
@@ -4792,10 +4834,18 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
       final allow = settingRes != null && settingRes['value'].toString().toLowerCase() == 'true';
 
       List students = [];
-      if (_isOwner || (widget.isAdmin && allow)) {
+      if (_isOwner) {
         students = await client
             .from('students')
-            .select('student_id, full_name')
+            .select('student_id, full_name, gender')
+            .order('full_name');
+      } else if (widget.isAdmin && allow) {
+        final prefs = await SharedPreferences.getInstance();
+        final myGender = prefs.getString('student_gender') ?? 'male';
+        students = await client
+            .from('students')
+            .select('student_id, full_name, gender')
+            .eq('gender', myGender)
             .order('full_name');
       }
 

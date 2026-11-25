@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'app_prefs.dart';
 import 'home_screen.dart';
 import 'notification_service.dart';
+import 'startup_manager.dart';
 
 const String supabaseUrl = 'https://stvavavzjrcxcivxykfv.supabase.co';
 const String supabaseAnonKey = 'sb_publishable_2D5B4SJgPAwqZqqgpiFaMA_HzTlka-k';
@@ -27,9 +28,58 @@ void main() async {
   runApp(IQPharmacyApp(isRegistered: isRegistered));
 }
 
-class IQPharmacyApp extends StatelessWidget {
+class IQPharmacyApp extends StatefulWidget {
   final bool isRegistered;
   const IQPharmacyApp({super.key, required this.isRegistered});
+
+  @override
+  State<IQPharmacyApp> createState() => _IQPharmacyAppState();
+}
+
+class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserver {
+  final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
+  late bool _isRegistered;
+  bool _isLocked = false;
+  bool _wentBackground = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _isRegistered = widget.isRegistered;
+    if (_isRegistered && _hasAnyLockEnabled) {
+      _isLocked = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  bool get _hasAnyLockEnabled =>
+      (AppPrefs.pinEnabled && AppPrefs.appPin.isNotEmpty) || AppPrefs.biometricEnabled;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_isRegistered) return;
+    if (BiometricHelper.isAuthenticating) return;
+
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      _wentBackground = true;
+      if (_hasAnyLockEnabled && !_isLocked) {
+        setState(() => _isLocked = true);
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (_wentBackground) {
+        _wentBackground = false;
+        if (_hasAnyLockEnabled && !_isLocked) {
+          setState(() => _isLocked = true);
+        }
+      }
+    }
+  }
 
   ThemeData _buildTheme() {
     final preset = AppPrefs.themePreset;
@@ -123,13 +173,9 @@ class IQPharmacyApp extends StatelessWidget {
           valueListenable: AppPrefs.localeNotifier,
           builder: (_, currentLocale, __) {
             final activeTheme = _buildTheme();
-            final Widget initialPage = !isRegistered
-                ? const StudentRegistrationScreen()
-                : (AppPrefs.pinEnabled && AppPrefs.appPin.isNotEmpty)
-                    ? const PinLockScreen()
-                    : const HomeScreen();
 
             return MaterialApp(
+              navigatorKey: _navKey,
               title: 'IQ_Pharmacy39',
               debugShowCheckedModeBanner: false,
               themeMode: AppPrefs.isDark ? ThemeMode.dark : ThemeMode.light,
@@ -147,10 +193,35 @@ class IQPharmacyApp extends StatelessWidget {
                   data: MediaQuery.of(context).copyWith(
                     textScaler: TextScaler.linear(AppPrefs.fontScale),
                   ),
-                  child: child ?? const SizedBox.shrink(),
+                  child: Stack(
+                    children: [
+                      child ?? const SizedBox.shrink(),
+                      if (_isRegistered && _isLocked)
+                        Positioned.fill(
+                          child: UnifiedAppLockScreen(
+                            onUnlocked: () {
+                              if (mounted) {
+                                setState(() => _isLocked = false);
+                              }
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
                 );
               },
-              home: initialPage,
+              home: !_isRegistered
+                  ? StudentRegistrationScreen(
+                      onRegistered: () {
+                        if (mounted) {
+                          setState(() {
+                            _isRegistered = true;
+                            _isLocked = false;
+                          });
+                        }
+                      },
+                    )
+                  : const HomeScreen(),
             );
           },
         );
@@ -159,22 +230,50 @@ class IQPharmacyApp extends StatelessWidget {
   }
 }
 
-class PinLockScreen extends StatefulWidget {
-  const PinLockScreen({super.key});
+/// شاشة القفل الموحدة (تجمع البصمة + رمز المرور PIN + استعادة الرمز في شاشة واحدة فقط دون تكرار)
+class UnifiedAppLockScreen extends StatefulWidget {
+  final VoidCallback onUnlocked;
+  const UnifiedAppLockScreen({super.key, required this.onUnlocked});
 
   @override
-  State<PinLockScreen> createState() => _PinLockScreenState();
+  State<UnifiedAppLockScreen> createState() => _UnifiedAppLockScreenState();
 }
 
-class _PinLockScreenState extends State<PinLockScreen> {
+class _UnifiedAppLockScreenState extends State<UnifiedAppLockScreen> {
   final TextEditingController _pinCtrl = TextEditingController();
   String? _error;
+  bool _triedAutoBio = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (AppPrefs.biometricEnabled && !_triedAutoBio) {
+        _triedAutoBio = true;
+        _triggerBiometric();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _pinCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _triggerBiometric() async {
+    final ok = await BiometricHelper.authenticate(
+      reason: AppPrefs.tr('استخدم البصمة لفتح تطبيق IQ_Pharmacy39', 'Use biometric to unlock IQ_Pharmacy39'),
+    );
+    if (ok && mounted) {
+      widget.onUnlocked();
+    }
+  }
 
   void _checkPin() {
     if (_pinCtrl.text.trim() == AppPrefs.appPin) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
+      _pinCtrl.clear();
+      widget.onUnlocked();
     } else {
       setState(() {
         _error = AppPrefs.tr('رمز المرور غير صحيح', 'Incorrect PIN');
@@ -272,9 +371,7 @@ class _PinLockScreenState extends State<PinLockScreen> {
                         await AppPrefs.setAppPin(true, newPin);
                         if (!mounted) return;
                         Navigator.pop(ctx);
-                        Navigator.of(context).pushReplacement(
-                          MaterialPageRoute(builder: (_) => const HomeScreen()),
-                        );
+                        widget.onUnlocked();
                       } catch (_) {
                         setDialogState(() {
                           verifying = false;
@@ -296,74 +393,119 @@ class _PinLockScreenState extends State<PinLockScreen> {
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.primary;
     final cardBg = Theme.of(context).cardColor;
+    final hasPin = AppPrefs.pinEnabled && AppPrefs.appPin.isNotEmpty;
 
-    return Scaffold(
-      backgroundColor: AppPrefs.isDark ? const Color(0xFF0F1115) : const Color(0xFFF3F5F8),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.lock_rounded, size: 64, color: accent),
-                const SizedBox(height: 16),
-                Text(
-                  AppPrefs.tr('التطبيق مقفل', 'App Locked'),
-                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        backgroundColor: AppPrefs.isDark ? const Color(0xFF0F1115) : const Color(0xFFF3F5F8),
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 360),
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: cardBg,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Colors.grey.withOpacity(0.18)),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  AppPrefs.tr('أدخل رمز المرور (PIN) للمتابعة', 'Enter your PIN to continue'),
-                  style: const TextStyle(color: Colors.grey),
-                ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: 220,
-                  child: TextField(
-                    controller: _pinCtrl,
-                    keyboardType: TextInputType.number,
-                    obscureText: true,
-                    textAlign: TextAlign.center,
-                    maxLength: 6,
-                    style: const TextStyle(fontSize: 24, letterSpacing: 6, fontWeight: FontWeight.bold),
-                    decoration: InputDecoration(
-                      counterText: '',
-                      hintText: '••••',
-                      filled: true,
-                      fillColor: cardBg,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: accent.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(Icons.lock_rounded, size: 42, color: accent),
                     ),
-                    onSubmitted: (_) => _checkPin(),
-                  ),
-                ),
-                if (_error != null) ...[
-                  const SizedBox(height: 10),
-                  Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
-                ],
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: 220,
-                  height: 48,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: accent,
-                      foregroundColor: Colors.black,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    const SizedBox(height: 16),
+                    Text(
+                      AppPrefs.tr('التطبيق مقفل', 'App Locked'),
+                      style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold),
                     ),
-                    onPressed: _checkPin,
-                    child: Text(AppPrefs.tr('دخول', 'Unlock'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  ),
+                    const SizedBox(height: 6),
+                    Text(
+                      hasPin && AppPrefs.biometricEnabled
+                          ? AppPrefs.tr('أدخل رمز المرور (PIN) أو استخدم البصمة', 'Enter PIN or use fingerprint')
+                          : hasPin
+                              ? AppPrefs.tr('أدخل رمز المرور (PIN) للمتابعة', 'Enter your PIN to continue')
+                              : AppPrefs.tr('استخدم بصمة الإصبع للمتابعة', 'Use fingerprint to continue'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.grey, fontSize: 13),
+                    ),
+                    if (hasPin) ...[
+                      const SizedBox(height: 22),
+                      TextField(
+                        controller: _pinCtrl,
+                        keyboardType: TextInputType.number,
+                        obscureText: true,
+                        textAlign: TextAlign.center,
+                        maxLength: 6,
+                        style: const TextStyle(fontSize: 24, letterSpacing: 6, fontWeight: FontWeight.bold),
+                        decoration: InputDecoration(
+                          counterText: '',
+                          hintText: '••••',
+                          filled: true,
+                          fillColor: AppPrefs.isDark ? Colors.black26 : Colors.grey.shade100,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        onSubmitted: (_) => _checkPin(),
+                      ),
+                      if (_error != null) ...[
+                        const SizedBox(height: 10),
+                        Text(_error!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
+                      ],
+                      const SizedBox(height: 18),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: accent,
+                            foregroundColor: Colors.black,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          ),
+                          onPressed: _checkPin,
+                          child: Text(AppPrefs.tr('فتح القفل', 'Unlock'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        ),
+                      ),
+                    ],
+                    if (AppPrefs.biometricEnabled) ...[
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(color: accent, width: 1.4),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          ),
+                          icon: Icon(Icons.fingerprint_rounded, color: accent, size: 26),
+                          label: Text(
+                            AppPrefs.tr('فتح بالبصمة', 'Unlock with Fingerprint'),
+                            style: TextStyle(color: accent, fontWeight: FontWeight.bold, fontSize: 15),
+                          ),
+                          onPressed: _triggerBiometric,
+                        ),
+                      ),
+                    ],
+                    if (hasPin) ...[
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed: _openForgotPinDialog,
+                        child: Text(
+                          AppPrefs.tr('نسيت رمز المرور؟', 'Forgot PIN?'),
+                          style: TextStyle(color: accent, fontWeight: FontWeight.w600, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                const SizedBox(height: 14),
-                TextButton(
-                  onPressed: _openForgotPinDialog,
-                  child: Text(
-                    AppPrefs.tr('نسيت رمز المرور؟', 'Forgot PIN?'),
-                    style: TextStyle(color: accent, fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -373,7 +515,8 @@ class _PinLockScreenState extends State<PinLockScreen> {
 }
 
 class StudentRegistrationScreen extends StatefulWidget {
-  const StudentRegistrationScreen({super.key});
+  final VoidCallback? onRegistered;
+  const StudentRegistrationScreen({super.key, this.onRegistered});
 
   @override
   State<StudentRegistrationScreen> createState() => _StudentRegistrationScreenState();
@@ -561,6 +704,8 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
       await prefs.setString('student_id', studentId);
       await prefs.setString('full_name', _foundStudent!['full_name']);
       await prefs.setBool('is_admin', _foundStudent!['is_admin'] ?? false);
+      final String rawGender = (_foundStudent!['gender'] ?? 'male').toString().trim().toLowerCase();
+      await prefs.setString('student_gender', rawGender == 'female' ? 'female' : 'male');
       if (_foundStudent!['university_email'] != null) {
         await prefs.setString('university_email', _foundStudent!['university_email'].toString());
       }
@@ -568,9 +713,13 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
       await NotificationService.init();
 
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
+      if (widget.onRegistered != null) {
+        widget.onRegistered!();
+      } else {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const HomeScreen()),
+        );
+      }
     } catch (e) {
       setState(() {
         _errorMessage = 'حدث خطأ أثناء تثبيت الحساب، تأكد من الإنترنت وحاول مجدداً.';
