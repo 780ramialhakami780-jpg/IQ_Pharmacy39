@@ -100,10 +100,23 @@ jobs:
               with open(manifest_path, "r") as f:
                   m = f.read()
               perms = ""
-              if "USE_BIOMETRIC" not in m:
-                  perms += '<uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="android.permission.USE_FINGERPRINT"/>\n    '
-              if "REQUEST_INSTALL_PACKAGES" not in m:
-                  perms += '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>\n    '
+              needed = [
+                  '<uses-permission android:name="android.permission.USE_BIOMETRIC"/>',
+                  '<uses-permission android:name="android.permission.USE_FINGERPRINT"/>',
+                  '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>',
+                  '<uses-permission android:name="android.permission.CAMERA"/>',
+                  '<uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>',
+                  '<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>',
+                  '<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>',
+                  '<uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>',
+                  '<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"/>',
+                  '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>',
+                  '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>',
+              ]
+              for p in needed:
+                  perm_name = p.split('android:name="')[1].split('"')[0]
+                  if perm_name not in m:
+                      perms += p + "\n    "
               if perms:
                   m = m.replace("<application", perms + "<application", 1)
               with open(manifest_path, "w") as f:
