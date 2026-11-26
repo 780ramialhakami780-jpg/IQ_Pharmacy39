@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -88,19 +89,50 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
     if (preset == 'light') {
       final base = ThemeData.light(useMaterial3: true);
       return base.copyWith(
-        scaffoldBackgroundColor: hasWallpaper ? Colors.transparent : const Color(0xFFF3F5F8),
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: hasWallpaper ? Colors.transparent : const Color(0xFFF1F5F9),
+        canvasColor: const Color(0xFFF1F5F9),
         primaryColor: const Color(0xFF0D9488),
-        cardColor: hasWallpaper ? Colors.white.withOpacity(0.92) : Colors.white,
-        textTheme: AppPrefs.applyFontToTextTheme(base.textTheme),
+        cardColor: hasWallpaper ? Colors.white.withOpacity(0.95) : Colors.white,
+        dividerColor: const Color(0xFFE2E8F0),
+        textTheme: AppPrefs.applyFontToTextTheme(base.textTheme).apply(
+          bodyColor: const Color(0xFF0F172A),
+          displayColor: const Color(0xFF0F172A),
+        ),
         colorScheme: const ColorScheme.light(
           primary: Color(0xFF0D9488),
           secondary: Color(0xFF2B6CB0),
           surface: Colors.white,
+          surfaceContainerLowest: Color(0xFFF1F5F9),
+          surfaceContainerLow: Color(0xFFF8FAFC),
+          surfaceContainer: Colors.white,
+          surfaceContainerHigh: Color(0xFFE2E8F0),
+          onSurface: Color(0xFF0F172A),
+          outlineVariant: Color(0xFFCBD5E1),
         ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.white,
           foregroundColor: Color(0xFF0F172A),
+          surfaceTintColor: Colors.transparent,
           elevation: 0,
+          systemOverlayStyle: SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.dark,
+            systemNavigationBarColor: Color(0xFFF1F5F9),
+            systemNavigationBarIconBrightness: Brightness.dark,
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFFF8FAFC),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+          ),
         ),
       );
     }
@@ -189,6 +221,15 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
               theme: activeTheme,
               darkTheme: activeTheme,
               builder: (context, child) {
+                final isLightMode = !AppPrefs.isDark;
+                SystemChrome.setSystemUIOverlayStyle(
+                  SystemUiOverlayStyle(
+                    statusBarColor: Colors.transparent,
+                    statusBarIconBrightness: isLightMode ? Brightness.dark : Brightness.light,
+                    systemNavigationBarColor: isLightMode ? const Color(0xFFF1F5F9) : const Color(0xFF0F1115),
+                    systemNavigationBarIconBrightness: isLightMode ? Brightness.dark : Brightness.light,
+                  ),
+                );
                 return MediaQuery(
                   data: MediaQuery.of(context).copyWith(
                     textScaler: TextScaler.linear(AppPrefs.fontScale),
@@ -734,7 +775,7 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
     final accent = Theme.of(context).colorScheme.primary;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F1115),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: Column(
           children: [
