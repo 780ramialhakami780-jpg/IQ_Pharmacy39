@@ -590,7 +590,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return Drawer(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      backgroundColor: isDark ? const Color(0xFF0B131E) : const Color(0xFFF8FAFC),
+      surfaceTintColor: Colors.transparent,
+      elevation: 16,
       child: SafeArea(
         child: Column(
           children: [
@@ -603,7 +605,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   end: Alignment.bottomLeft,
                   colors: isDark
                       ? [const Color(0xFF0F2927), const Color(0xFF16202A)]
-                      : [accent.withOpacity(0.22), accent.withOpacity(0.06)],
+                      : [const Color(0xFFE6FFFA), const Color(0xFFF1F5F9)],
                 ),
                 border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.18))),
               ),
@@ -1331,6 +1333,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (_) => StudentFastAttendanceSheet(
         studentId: _studentId,
         studentName: _studentName,
+        studentGender: _studentGender,
       ),
     );
   }
@@ -1653,11 +1656,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _showMyAttendanceDetails() {
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
-    final Map<String, int> grouped = {};
-    for (var record in _myAttendance) {
-      final code = (record['session_code'] ?? 'عام').toString();
-      grouped[code] = (grouped[code] ?? 0) + 1;
-    }
+    final presentCount = _myAttendance.where((r) => (r['status'] ?? 'present') == 'present').length;
 
     showModalBottomSheet(
       context: context,
@@ -1672,8 +1671,14 @@ class _HomeScreenState extends State<HomeScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(AppPrefs.tr('سجل الحضور الشخصي', 'My Attendance Log'), style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: accent)),
-                Chip(label: Text(AppPrefs.tr('الإجمالي: ${_myAttendance.length}', 'Total: ${_myAttendance.length}'))),
+                Text(AppPrefs.tr('سجل الحضور الموثّق', 'Verified Attendance Log'), style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: accent)),
+                Chip(
+                  backgroundColor: Colors.green.withOpacity(0.16),
+                  label: Text(
+                    AppPrefs.tr('محضر: $presentCount ✓', 'Present: $presentCount ✓'),
+                    style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -1693,13 +1698,35 @@ class _HomeScreenState extends State<HomeScreen> {
               )
             else
               Flexible(
-                child: ListView(
+                child: ListView.builder(
                   shrinkWrap: true,
-                  children: grouped.entries.map((e) => ListTile(
-                    leading: const Icon(Icons.check_circle, color: Colors.green),
-                    title: Text('${AppPrefs.tr('الجلسة / المادة:', 'Session:')} ${e.key}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    trailing: Text('${e.value} ${AppPrefs.tr('محاضرة', 'lectures')}', style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
-                  )).toList(),
+                  itemCount: _myAttendance.length,
+                  itemBuilder: (_, idx) {
+                    final rec = _myAttendance[idx];
+                    final status = (rec['status'] ?? 'present').toString();
+                    final session = (rec['session_code'] ?? 'عام').toString();
+                    final by = (rec['recorded_by'] ?? 'المندوب').toString();
+                    final isPresent = status == 'present';
+                    final isExcused = status == 'excused';
+                    return ListTile(
+                      leading: Icon(
+                        isPresent
+                            ? Icons.verified_rounded
+                            : (isExcused ? Icons.info_rounded : Icons.cancel_rounded),
+                        color: isPresent ? Colors.green : (isExcused ? Colors.amber : Colors.redAccent),
+                      ),
+                      title: Text(session, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                      subtitle: Text(
+                        isPresent
+                            ? 'تم التحضير وموثّق ✓ • بواسطة: $by'
+                            : (isExcused ? 'غائب بعذر معتمد 🟡 • بواسطة: $by' : 'مغيب ❌'),
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: isPresent ? Colors.green : (isExcused ? Colors.amber.shade700 : Colors.redAccent),
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
           ],
@@ -2209,13 +2236,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: TextField(
-                                  controller: emailCtrl,
-                                  keyboardType: TextInputType.emailAddress,
-                                  decoration: InputDecoration(
-                                    hintText: 'example@su.edu.ye',
-                                    isDense: true,
-                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                child: Directionality(
+                                  textDirection: TextDirection.ltr,
+                                  child: TextField(
+                                    controller: emailCtrl,
+                                    textDirection: TextDirection.ltr,
+                                    textAlign: TextAlign.left,
+                                    keyboardType: TextInputType.emailAddress,
+                                    decoration: InputDecoration(
+                                      hintText: '27094070@su.edu.ye',
+                                      isDense: true,
+                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                    ),
                                   ),
                                 ),
                               ),

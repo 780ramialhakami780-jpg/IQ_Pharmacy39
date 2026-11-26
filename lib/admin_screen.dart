@@ -170,16 +170,22 @@ class _AdminScreenState extends State<AdminScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accent = isDark ? const Color(0xFF4FD1C5) : const Color(0xFF0F766E);
+
     return DefaultTabController(
       length: 5,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('لوحة إدارة الدفعة السرية'),
-          backgroundColor: const Color(0xFF1E293B),
-          bottom: const TabBar(
+          backgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFF0F766E),
+          foregroundColor: Colors.white,
+          bottom: TabBar(
             isScrollable: true,
-            indicatorColor: Color(0xFF4FD1C5),
-            tabs: [
+            indicatorColor: isDark ? const Color(0xFF4FD1C5) : Colors.amberAccent,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            tabs: const [
               Tab(text: 'الإعلانات والتصويت'),
               Tab(text: 'المواد والمرجع'),
               Tab(text: 'بنك الأسئلة'),
@@ -835,7 +841,57 @@ class _AdminScreenState extends State<AdminScreen> {
               ),
             ),
             const Divider(height: 32),
-            const Text('📅 إضافة محاضرة إلى الجدول', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('🔄 تدوير مجموعات عملي يوم الأحد (شطر البنين)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'يبدّل فترات المعامل يوم الأحد تلقائياً بين المجموعات (A ↔ C و B ↔ D) بضغطة واحدة.',
+                      style: TextStyle(fontSize: 11.5, color: Colors.grey),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.swap_horiz_rounded),
+                        label: const Text('تبديل مجموعات الأحد الأسبوعية الآن'),
+                        onPressed: () async {
+                          setState(() => _isLoading = true);
+                          try {
+                            final sundayRows = await _client
+                                .from('schedule')
+                                .select()
+                                .eq('target_gender', 'male')
+                                .eq('day_name', 'الأحد');
+                            const swapMap = {'A': 'C', 'C': 'A', 'B': 'D', 'D': 'B'};
+                            for (final r in sundayRows) {
+                              final ord = (r['lecture_order'] ?? '').toString().trim();
+                              if (swapMap.containsKey(ord)) {
+                                await _client
+                                    .from('schedule')
+                                    .update({'lecture_order': swapMap[ord]})
+                                    .eq('id', r['id']);
+                              }
+                            }
+                            _showMsg('تم تبديل مجموعات عملي يوم الأحد (A↔C و B↔D) بنجاح ✓');
+                          } catch (_) {
+                            _showMsg('تعذر تبديل المجموعات حالياً', isError: true);
+                          } finally {
+                            if (mounted) setState(() => _isLoading = false);
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text('📅 إضافة محاضرة إلى الجدول', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
             const SizedBox(height: 10),
             DropdownButtonFormField<String>(
               value: selectedDay,
