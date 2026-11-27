@@ -473,22 +473,31 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _wrapWithWallpaper(Widget child) {
     if (AppPrefs.wallpaperType == 'none') return child;
+    final isLight = !AppPrefs.isDark;
 
     Widget bgLayer;
     if (AppPrefs.wallpaperType == 'preset') {
       List<Color> colors;
       switch (AppPrefs.wallpaperValue) {
         case 'gradient_blue':
-          colors = [const Color(0xFF0F172A), const Color(0xFF1E3A8A), const Color(0xFF0F172A)];
+          colors = isLight
+              ? [const Color(0xFFEFF6FF), const Color(0xFFDBEAFE), const Color(0xFFF1F5F9)]
+              : [const Color(0xFF0F172A), const Color(0xFF1E3A8A), const Color(0xFF0F172A)];
           break;
         case 'gradient_emerald':
-          colors = [const Color(0xFF022C22), const Color(0xFF065F46), const Color(0xFF042F2E)];
+          colors = isLight
+              ? [const Color(0xFFECFDF5), const Color(0xFFD1FAE5), const Color(0xFFF1F5F9)]
+              : [const Color(0xFF022C22), const Color(0xFF065F46), const Color(0xFF042F2E)];
           break;
         case 'gradient_royal':
-          colors = [const Color(0xFF1E1B4B), const Color(0xFF312E81), const Color(0xFF0F172A)];
+          colors = isLight
+              ? [const Color(0xFFEEF2FF), const Color(0xFFE0E7FF), const Color(0xFFF1F5F9)]
+              : [const Color(0xFF1E1B4B), const Color(0xFF312E81), const Color(0xFF0F172A)];
           break;
         default:
-          colors = [const Color(0xFF042F2E), const Color(0xFF115E59), const Color(0xFF0F172A)];
+          colors = isLight
+              ? [const Color(0xFFF0FDFA), const Color(0xFFCCFBF1), const Color(0xFFF1F5F9)]
+              : [const Color(0xFF042F2E), const Color(0xFF115E59), const Color(0xFF0F172A)];
       }
       bgLayer = Container(
         decoration: BoxDecoration(
@@ -548,6 +557,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: _wrapWithWallpaper(
             Scaffold(
               key: _scaffoldKey,
+              backgroundColor: AppPrefs.wallpaperType != 'none' ? Colors.transparent : null,
               endDrawer: _buildSideMenuDrawer(cardBg, accent),
               body: SafeArea(child: pages[_currentIndex]),
               bottomNavigationBar: BottomNavigationBar(
@@ -1323,9 +1333,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openFastRadarAttendance() {
+  Future<void> _openFastRadarAttendance() async {
     final cardBg = Theme.of(context).cardColor;
-    showModalBottomSheet(
+    await showModalBottomSheet(
       context: context,
       backgroundColor: cardBg,
       isScrollControlled: true,
@@ -1336,6 +1346,13 @@ class _HomeScreenState extends State<HomeScreen> {
         studentGender: _studentGender,
       ),
     );
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      final rawCached = prefs.getString('cache_my_attendance');
+      if (rawCached != null && rawCached.isNotEmpty && mounted) {
+        setState(() => _myAttendance = jsonDecode(rawCached));
+      }
+    } catch (_) {}
   }
 
   Widget _buildAnnouncementsSection(Color cardBg, Color accent, double radius) {
@@ -1653,7 +1670,29 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showMyAttendanceDetails() {
+  Future<void> _showMyAttendanceDetails() async {
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      final rawCached = prefs.getString('cache_my_attendance');
+      if (rawCached != null && rawCached.isNotEmpty) {
+        final decoded = jsonDecode(rawCached) as List<dynamic>;
+        if (mounted) setState(() => _myAttendance = decoded);
+      }
+    } catch (_) {}
+
+    if (_studentId.isNotEmpty) {
+      try {
+        final fresh = await Supabase.instance.client
+            .from('attendance')
+            .select()
+            .eq('student_id', _studentId)
+            .order('created_at', ascending: false);
+        await prefs.setString('cache_my_attendance', jsonEncode(fresh));
+        if (mounted) setState(() => _myAttendance = fresh);
+      } catch (_) {}
+    }
+
+    if (!mounted) return;
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
     final presentCount = _myAttendance.where((r) => (r['status'] ?? 'present') == 'present').length;
@@ -1705,6 +1744,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     final rec = _myAttendance[idx];
                     final status = (rec['status'] ?? 'present').toString();
                     final session = (rec['session_code'] ?? 'عام').toString();
+                    final lecNum = (rec['lecture_num'] ?? '').toString().trim();
                     final by = (rec['recorded_by'] ?? 'المندوب').toString();
                     final isPresent = status == 'present';
                     final isExcused = status == 'excused';
@@ -1718,8 +1758,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       title: Text(session, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
                       subtitle: Text(
                         isPresent
-                            ? 'تم التحضير وموثّق ✓ • بواسطة: $by'
-                            : (isExcused ? 'غائب بعذر معتمد 🟡 • بواسطة: $by' : 'مغيب ❌'),
+                            ? '${lecNum.isNotEmpty ? 'محاضرة رقم ($lecNum) • ' : ''}تم التحضير وموثّق ✓ • بواسطة: $by'
+                            : (isExcused
+                                ? '${lecNum.isNotEmpty ? 'محاضرة رقم ($lecNum) • ' : ''}غائب بعذر معتمد 🟡 • بواسطة: $by'
+                                : '${lecNum.isNotEmpty ? 'محاضرة رقم ($lecNum) • ' : ''}مغيب ❌'),
                         style: TextStyle(
                           fontSize: 11.5,
                           color: isPresent ? Colors.green : (isExcused ? Colors.amber.shade700 : Colors.redAccent),
@@ -1842,7 +1884,26 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(height: 16),
         Expanded(
           child: dayLectures.isEmpty
-              ? Center(child: Text(AppPrefs.tr('لا توجد محاضرات مسجلة ليوم $selectedDay', 'No lectures on $selectedDay'), style: const TextStyle(color: Colors.grey)))
+              ? Center(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 24),
+                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+                    decoration: BoxDecoration(
+                      color: cardBg,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.grey.withOpacity(0.22)),
+                    ),
+                    child: Text(
+                      AppPrefs.tr('لا توجد محاضرات مسجلة ليوم $selectedDay', 'No lectures on $selectedDay'),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   itemCount: dayLectures.length,
@@ -1889,7 +1950,26 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         Expanded(
           child: _assignments.isEmpty
-              ? Center(child: Text(AppPrefs.tr('لا توجد تكاليف حالياً 🎉', 'No assignments right now 🎉'), style: const TextStyle(fontSize: 16, color: Colors.grey)))
+              ? Center(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 24),
+                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+                    decoration: BoxDecoration(
+                      color: cardBg,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.grey.withOpacity(0.22)),
+                    ),
+                    child: Text(
+                      AppPrefs.tr('لا توجد تكاليف حالياً 🎉', 'No assignments right now 🎉'),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Theme.of(context).colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                )
               : ListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   itemCount: _assignments.length,

@@ -90,7 +90,7 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
       final base = ThemeData.light(useMaterial3: true);
       return base.copyWith(
         brightness: Brightness.light,
-        scaffoldBackgroundColor: hasWallpaper ? Colors.transparent : const Color(0xFFF1F5F9),
+        scaffoldBackgroundColor: const Color(0xFFF1F5F9),
         canvasColor: const Color(0xFFF1F5F9),
         primaryColor: const Color(0xFF0D9488),
         cardColor: hasWallpaper ? Colors.white.withOpacity(0.95) : Colors.white,
@@ -140,18 +140,23 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
     if (preset == 'amoled') {
       final base = ThemeData.dark(useMaterial3: true);
       return base.copyWith(
-        scaffoldBackgroundColor: hasWallpaper ? Colors.transparent : Colors.black,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: Colors.black,
+        canvasColor: Colors.black,
         primaryColor: const Color(0xFF4FD1C5),
-        cardColor: hasWallpaper ? const Color(0xFF111317).withOpacity(0.88) : const Color(0xFF111317),
+        cardColor: hasWallpaper ? const Color(0xFF111317).withOpacity(0.90) : const Color(0xFF111317),
         textTheme: AppPrefs.applyFontToTextTheme(base.textTheme),
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF4FD1C5),
           secondary: Color(0xFF38B2AC),
           surface: Color(0xFF111317),
+          surfaceContainerLowest: Colors.black,
+          surfaceContainer: Color(0xFF111317),
         ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.black,
           foregroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
           elevation: 0,
         ),
       );
@@ -160,18 +165,23 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
     if (preset == 'pharmacy') {
       final base = ThemeData.dark(useMaterial3: true);
       return base.copyWith(
-        scaffoldBackgroundColor: hasWallpaper ? Colors.transparent : const Color(0xFF071A19),
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF071A19),
+        canvasColor: const Color(0xFF071A19),
         primaryColor: const Color(0xFF2DD4BF),
-        cardColor: hasWallpaper ? const Color(0xFF0F2927).withOpacity(0.88) : const Color(0xFF0F2927),
+        cardColor: hasWallpaper ? const Color(0xFF0F2927).withOpacity(0.90) : const Color(0xFF0F2927),
         textTheme: AppPrefs.applyFontToTextTheme(base.textTheme),
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF2DD4BF),
           secondary: Color(0xFF10B981),
           surface: Color(0xFF0F2927),
+          surfaceContainerLowest: Color(0xFF071A19),
+          surfaceContainer: Color(0xFF0F2927),
         ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF0B2220),
           foregroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
           elevation: 0,
         ),
       );
@@ -179,7 +189,7 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
 
     final base = ThemeData.dark(useMaterial3: true);
     return base.copyWith(
-      scaffoldBackgroundColor: hasWallpaper ? Colors.transparent : const Color(0xFF0F1115),
+      scaffoldBackgroundColor: const Color(0xFF0F1115),
       primaryColor: const Color(0xFF2B6CB0),
       cardColor: hasWallpaper ? const Color(0xFF181B20).withOpacity(0.88) : const Color(0xFF181B20),
       textTheme: AppPrefs.applyFontToTextTheme(base.textTheme),
@@ -222,11 +232,18 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
               darkTheme: activeTheme,
               builder: (context, child) {
                 final isLightMode = !AppPrefs.isDark;
+                final navBarBg = isLightMode
+                    ? const Color(0xFFF1F5F9)
+                    : (AppPrefs.themePreset == 'amoled'
+                        ? Colors.black
+                        : (AppPrefs.themePreset == 'pharmacy'
+                            ? const Color(0xFF071A19)
+                            : const Color(0xFF0F1115)));
                 SystemChrome.setSystemUIOverlayStyle(
                   SystemUiOverlayStyle(
                     statusBarColor: Colors.transparent,
                     statusBarIconBrightness: isLightMode ? Brightness.dark : Brightness.light,
-                    systemNavigationBarColor: isLightMode ? const Color(0xFFF1F5F9) : const Color(0xFF0F1115),
+                    systemNavigationBarColor: navBarBg,
                     systemNavigationBarIconBrightness: isLightMode ? Brightness.dark : Brightness.light,
                   ),
                 );

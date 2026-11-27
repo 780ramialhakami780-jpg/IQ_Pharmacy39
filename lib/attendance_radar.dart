@@ -1462,7 +1462,6 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   static const List<String> _practicalGroups = ['مجموعة A', 'مجموعة B', 'مجموعة C', 'مجموعة D'];
 
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
-  final TextEditingController _lectureNumCtrl = TextEditingController(text: '1');
   final TextEditingController _pinCtrl = TextEditingController();
 
   String _selectedCourseCode = 'PHAR-101';
@@ -1474,6 +1473,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   StreamSubscription<List<ScanResult>>? _scanSub;
 
   Map<String, dynamic>? _verifiedRecord;
+  Map<String, dynamic>? _activeSession;
   bool _sessionPausedByAdmin = false;
 
   String get _effectiveCourseCode {
@@ -1484,13 +1484,33 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
     return _selectedCourseCode;
   }
 
-  String get _computedSessionLabel {
+  String _buildSessionLabelForLec(String lecNum) {
     final code = _effectiveCourseCode;
-    final lec = 'محاضرة ${_lectureNumCtrl.text.trim().isEmpty ? '1' : _lectureNumCtrl.text.trim()}';
+    final cleanLec = lecNum.trim().isEmpty ? '1' : lecNum.trim();
     if (_lectureType == 'عملي') {
-      return '$code | $lec | عملي ($_selectedGroup)';
+      return '$code | محاضرة $cleanLec | عملي ($_selectedGroup)';
     }
-    return '$code | $lec | نظري';
+    return '$code | محاضرة $cleanLec | نظري';
+  }
+
+  String get _detectedLectureNum {
+    if (_verifiedRecord != null && (_verifiedRecord!['lecture_num'] ?? '').toString().trim().isNotEmpty) {
+      return _verifiedRecord!['lecture_num'].toString().trim();
+    }
+    if (_activeSession != null && (_activeSession!['lecture_num'] ?? '').toString().trim().isNotEmpty) {
+      return _activeSession!['lecture_num'].toString().trim();
+    }
+    return '';
+  }
+
+  String get _computedSessionLabel {
+    if (_verifiedRecord != null && (_verifiedRecord!['session_code'] ?? '').toString().trim().isNotEmpty) {
+      return _verifiedRecord!['session_code'].toString().trim();
+    }
+    if (_activeSession != null && (_activeSession!['session_code'] ?? '').toString().trim().isNotEmpty) {
+      return _activeSession!['session_code'].toString().trim();
+    }
+    return _buildSessionLabelForLec(_detectedLectureNum.isNotEmpty ? _detectedLectureNum : '1');
   }
 
   @override
@@ -1504,35 +1524,70 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   void dispose() {
     _scanSub?.cancel();
     BleSafeHelper.safeStopAll(_peripheral);
-    _lectureNumCtrl.dispose();
     _pinCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _checkVerifiedAttendanceStatus() async {
     try {
-      final sessionLabel = _computedSessionLabel;
-      final rec = await Supabase.instance.client
-          .from('attendance')
-          .select()
-          .eq('student_id', widget.studentId)
-          .eq('session_code', sessionLabel)
-          .maybeSingle();
+      final code = _effectiveCourseCode;
+      final grp = _lectureType == 'عملي' ? _selectedGroup : 'الكل';
 
-      final sess = await Supabase.instance.client
+      // 1. البحث عن الجلسة النشطة المفتوحة حالياً من قبل المشرف/المندوب لهذه المادة
+      final sessList = await Supabase.instance.client
           .from('attendance_sessions')
           .select()
-          .eq('session_code', sessionLabel)
-          .maybeSingle();
+          .eq('course_code', code)
+          .eq('lecture_type', _lectureType)
+          .eq('group_name', grp)
+          .eq('target_gender', widget.studentGender)
+          .order('updated_at', ascending: false)
+          .limit(1);
+
+      Map<String, dynamic>? latestSess;
+      if (sessList.isNotEmpty) {
+        latestSess = Map<String, dynamic>.from(sessList.first);
+      }
+
+      // 2. التحقق هل تم تحضير الطالب في الجلسة النشطة أو في أحدث محاضرة مسجلة له في هذا المقرر
+      Map<String, dynamic>? matchedRec;
+      if (latestSess != null && (latestSess['session_code'] ?? '').toString().isNotEmpty) {
+        final rec = await Supabase.instance.client
+            .from('attendance')
+            .select()
+            .eq('student_id', widget.studentId)
+            .eq('session_code', latestSess['session_code'])
+            .maybeSingle();
+        if (rec != null && (rec['status'] == 'present' || rec['status'] == 'excused')) {
+          matchedRec = Map<String, dynamic>.from(rec);
+        }
+      }
+
+      if (matchedRec == null) {
+        final recentList = await Supabase.instance.client
+            .from('attendance')
+            .select()
+            .eq('student_id', widget.studentId)
+            .eq('course_code', code)
+            .order('created_at', ascending: false)
+            .limit(1);
+        if (recentList.isNotEmpty) {
+          final r = Map<String, dynamic>.from(recentList.first);
+          final sc = (r['session_code'] ?? '').toString();
+          final typeMatches = _lectureType == 'عملي' ? sc.contains(_selectedGroup) : sc.contains('نظري');
+          if (typeMatches && (r['status'] == 'present' || r['status'] == 'excused')) {
+            matchedRec = r;
+          }
+        }
+      }
 
       if (!mounted) return;
       setState(() {
-        if (rec != null && (rec['status'] == 'present' || rec['status'] == 'excused')) {
-          _verifiedRecord = rec;
-        } else {
-          _verifiedRecord = null;
-        }
-        _sessionPausedByAdmin = sess != null && sess['is_active'] == true && sess['is_paused'] == true;
+        _activeSession = latestSess;
+        _verifiedRecord = matchedRec;
+        _sessionPausedByAdmin = latestSess != null &&
+            latestSess['is_active'] == true &&
+            latestSess['is_paused'] == true;
       });
     } catch (_) {}
   }
@@ -1571,7 +1626,6 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   }
 
   Future<void> _submitPinAttendance() async {
-    final session = _computedSessionLabel;
     final pin = _pinCtrl.text.trim();
 
     if (pin.length != 4) {
@@ -1581,7 +1635,10 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
       return;
     }
 
+    await _checkVerifiedAttendanceStatus();
+
     if (_sessionPausedByAdmin) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('⏸️ التحضير متوقف مؤقتاً من قِبل المندوب حالياً.'),
@@ -1591,10 +1648,35 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
       return;
     }
 
-    if (!RadarCrypto.verifyPin(session, pin)) {
+    // تحديد الجلسة ورقم المحاضرة تلقائياً من الجلسة النشطة للمشرف أو مطابقة الكود
+    String matchedSession = '';
+    String matchedLecNum = '';
+
+    if (_activeSession != null && (_activeSession!['session_code'] ?? '').toString().isNotEmpty) {
+      final candidateSession = _activeSession!['session_code'].toString();
+      if (RadarCrypto.verifyPin(candidateSession, pin)) {
+        matchedSession = candidateSession;
+        matchedLecNum = (_activeSession!['lecture_num'] ?? '1').toString();
+      }
+    }
+
+    // في حال عدم توفر إنترنت لجلب الجلسة النشطة، نطابق الكود تلقائياً مع أرقام المحاضرات (1..30)
+    if (matchedSession.isEmpty) {
+      for (int i = 1; i <= 30; i++) {
+        final candidate = _buildSessionLabelForLec('$i');
+        if (RadarCrypto.verifyPin(candidate, pin)) {
+          matchedSession = candidate;
+          matchedLecNum = '$i';
+          break;
+        }
+      }
+    }
+
+    if (matchedSession.isEmpty) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(AppPrefs.tr('الكود غير صحيح أو انتهت مدته (تأكد من كود المقرر ورقم المحاضرة)', 'Invalid or expired PIN')),
+          content: Text(AppPrefs.tr('الكود غير صحيح أو انتهت مدته (تأكد من المقرر ونوع المحاضرة)', 'Invalid or expired PIN')),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -1607,14 +1689,18 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
           .from('attendance')
           .select()
           .eq('student_id', widget.studentId)
-          .eq('session_code', session)
+          .eq('session_code', matchedSession)
           .maybeSingle();
 
       Map<String, dynamic> savedRow;
       if (existing != null) {
         savedRow = await Supabase.instance.client
             .from('attendance')
-            .update({'status': 'present', 'recorded_by': 'تحضير ذاتي بالكود'})
+            .update({
+              'status': 'present',
+              'lecture_num': matchedLecNum,
+              'recorded_by': 'تحضير ذاتي بالكود',
+            })
             .eq('id', existing['id'])
             .select()
             .single();
@@ -1624,9 +1710,9 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
             .insert({
               'student_id': widget.studentId,
               'full_name': widget.studentName,
-              'session_code': session,
+              'session_code': matchedSession,
               'course_code': _effectiveCourseCode,
-              'lecture_num': _lectureNumCtrl.text.trim().isEmpty ? '1' : _lectureNumCtrl.text.trim(),
+              'lecture_num': matchedLecNum,
               'status': 'present',
               'recorded_by': 'تحضير ذاتي بالكود',
             })
@@ -1634,35 +1720,48 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
             .single();
       }
 
+      // تحديث الذاكرة المحلية لسجل حضور الطالب ليظهر فوراً في "سجل حضوري"
+      final prefs = await SharedPreferences.getInstance();
+      final cachedList = jsonDecode(prefs.getString('cache_my_attendance') ?? '[]') as List<dynamic>;
+      cachedList.removeWhere((e) => (e['session_code'] ?? '') == matchedSession);
+      cachedList.insert(0, savedRow);
+      await prefs.setString('cache_my_attendance', jsonEncode(cachedList));
+
       if (!mounted) return;
       setState(() {
         _submitting = false;
         _verifiedRecord = savedRow;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppPrefs.tr('تم تسجيل حضورك في ($session) بنجاح ✓', 'Attendance recorded ✓')), backgroundColor: Colors.green),
+        SnackBar(
+          content: Text(AppPrefs.tr('تم تسجيل حضورك في المحاضرة رقم ($matchedLecNum) بنجاح ✓', 'Attendance recorded for Lecture #$matchedLecNum ✓')),
+          backgroundColor: Colors.green,
+        ),
       );
     } catch (_) {
       final prefs = await SharedPreferences.getInstance();
       final pending = prefs.getStringList('pending_offline_attendance') ?? [];
-      pending.add(jsonEncode({
+      final offlineRow = {
         'student_id': widget.studentId,
         'full_name': widget.studentName,
-        'session_code': session,
+        'session_code': matchedSession,
         'course_code': _effectiveCourseCode,
-        'lecture_num': _lectureNumCtrl.text.trim().isEmpty ? '1' : _lectureNumCtrl.text.trim(),
+        'lecture_num': matchedLecNum,
         'status': 'present',
         'recorded_by': 'تحضير ذاتي (أوفلاين)',
-      }));
+      };
+      pending.add(jsonEncode(offlineRow));
       await prefs.setStringList('pending_offline_attendance', pending);
+
+      final cachedList = jsonDecode(prefs.getString('cache_my_attendance') ?? '[]') as List<dynamic>;
+      cachedList.removeWhere((e) => (e['session_code'] ?? '') == matchedSession);
+      cachedList.insert(0, offlineRow);
+      await prefs.setString('cache_my_attendance', jsonEncode(cachedList));
+
       if (!mounted) return;
       setState(() {
         _submitting = false;
-        _verifiedRecord = {
-          'session_code': session,
-          'status': 'present',
-          'recorded_by': 'محفوظ محلياً (سيُرفع تلقائياً)',
-        };
+        _verifiedRecord = offlineRow;
       });
     }
   }
@@ -1670,6 +1769,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   @override
   Widget build(BuildContext context) {
     final accent = Theme.of(context).colorScheme.primary;
+    final lecNumDisplay = _detectedLectureNum;
 
     return Padding(
       padding: EdgeInsets.fromLTRB(20, 20, 20, MediaQuery.of(context).viewInsets.bottom + 20),
@@ -1718,11 +1818,16 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
                                 : 'تم تحضيرك بنجاح وموثّق ✓',
                             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
                           ),
-                          const SizedBox(height: 2),
+                          const SizedBox(height: 3),
                           Text(
                             'المقرر: ${_verifiedRecord!['session_code'] ?? _computedSessionLabel}',
-                            style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
                           ),
+                          if (lecNumDisplay.isNotEmpty)
+                            Text(
+                              'رقم المحاضرة المعتمد: محاضرة رقم ($lecNumDisplay)',
+                              style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                            ),
                           Text(
                             'بواسطة: ${_verifiedRecord!['recorded_by'] ?? 'المندوب'}',
                             style: const TextStyle(color: Colors.greenAccent, fontSize: 11, fontWeight: FontWeight.bold),
@@ -1782,16 +1887,6 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
                   _checkVerifiedAttendanceStatus();
                 }
               },
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _lectureNumCtrl,
-              keyboardType: TextInputType.number,
-              onChanged: (_) => _checkVerifiedAttendanceStatus(),
-              decoration: InputDecoration(
-                labelText: AppPrefs.tr('رقم المحاضرة (مثال: 1، 2...)', 'Lecture Number'),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-              ),
             ),
             const SizedBox(height: 10),
             Row(
