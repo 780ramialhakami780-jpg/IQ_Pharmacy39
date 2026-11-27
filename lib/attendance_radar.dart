@@ -238,7 +238,8 @@ class AdminRadarScreen extends StatefulWidget {
   State<AdminRadarScreen> createState() => _AdminRadarScreenState();
 }
 
-class _AdminRadarScreenState extends State<AdminRadarScreen> with SingleTickerProviderStateMixin {
+class _AdminRadarScreenState extends State<AdminRadarScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const int _attManufacturerId = 0x3939;
   static const List<String> _practicalGroups = ['مجموعة A', 'مجموعة B', 'مجموعة C', 'مجموعة D'];
 
@@ -315,12 +316,23 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> with SingleTickerPr
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tabController = TabController(length: 3, vsync: this);
     _loadRosterAndGender();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // عند العودة من خروج مؤقت أثناء تشغيل التحضير: نُبقي كل البيانات والعدّاد ونعيد تنشيط البلوتوث والمزامنة تلقائياً
+    if (state == AppLifecycleState.resumed && _isRadarActive && !_isPaused) {
+      _pullUnifiedAttendanceFromCloud();
+      _startRadarHardware();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _stopRadarHardwareOnly();
     _mainTimer?.cancel();
     _cloudSyncTimer?.cancel();
@@ -800,7 +812,34 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> with SingleTickerPr
     final theoryWin = CourseCatalog.evaluateTheoryWindow(selectedItem);
     final stats = _statsCounts;
 
-    return Scaffold(
+    return PopScope(
+      canPop: !_isRadarActive,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final leave = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('جلسة التحضير قيد التشغيل'),
+            content: const Text('جلسة التحضير نشطة حالياً. هل تريد إنهاء الجلسة واعتماد الكشف قبل الخروج، أم البقاء في شاشة التحضير؟'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('البقاء في التحضير'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('إنهاء واعتماد ثم خروج'),
+              ),
+            ],
+          ),
+        );
+        if (leave == true) {
+          await _finishSession();
+          if (mounted) Navigator.pop(context);
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text('رادار التحضير الموحد (نظري / عملي)'),
         bottom: _isRadarActive
@@ -1035,6 +1074,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen> with SingleTickerPr
                 ),
               ],
             ),
+      ),
     );
   }
 
@@ -1457,7 +1497,8 @@ class StudentFastAttendanceSheet extends StatefulWidget {
   State<StudentFastAttendanceSheet> createState() => _StudentFastAttendanceSheetState();
 }
 
-class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet> {
+class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
+    with WidgetsBindingObserver {
   static const int _attManufacturerId = 0x3939;
   static const List<String> _practicalGroups = ['مجموعة A', 'مجموعة B', 'مجموعة C', 'مجموعة D'];
 
@@ -1516,12 +1557,24 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _checkVerifiedAttendanceStatus();
     _startAutoBluetoothPresence();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      _checkVerifiedAttendanceStatus();
+      if (!_broadcasting) {
+        _startAutoBluetoothPresence();
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scanSub?.cancel();
     BleSafeHelper.safeStopAll(_peripheral);
     _pinCtrl.dispose();

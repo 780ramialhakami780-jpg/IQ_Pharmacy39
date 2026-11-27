@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import 'attendance_radar.dart';
+import 'main.dart';
 
 class AdminScreen extends StatefulWidget {
   final String adminName;
@@ -28,6 +29,157 @@ class _AdminScreenState extends State<AdminScreen> {
   List<dynamic> _subjectRefs = [];
   Map<String, String> _studentEmails = {};
   bool _isLoading = false;
+
+  // --- حقول ثابتة لتبويب المواد والملفات والمرجع (لا تُمسح أبداً عند إعادة البناء أو الخروج المؤقت) ---
+  static const List<String> _fileTypeOptions = ['mp3', 'mp4', 'jpg', 'pdf', 'docx', 'xlsx', 'pptx', 'أخرى'];
+  final TextEditingController _subjNameCtrl = TextEditingController();
+  final TextEditingController _subjDescCtrl = TextEditingController();
+  dynamic _selectedFileSubjId;
+  final TextEditingController _lecNumCtrl = TextEditingController(text: '1');
+  final TextEditingController _fileTitleCtrl = TextEditingController();
+  String _selectedFileType = 'pdf';
+  final TextEditingController _fileUrlCtrl = TextEditingController();
+
+  bool _isUploadingFile = false;
+  double _uploadProgress = 0.0;
+  String _uploadingFileName = '';
+  int _uploadingFileSizeBytes = 0;
+  Map<String, dynamic>? _uploadedFilePreview;
+
+  dynamic _selectedRefSubjId;
+  final TextEditingController _refTitleCtrl = TextEditingController();
+  final TextEditingController _refContentCtrl = TextEditingController();
+
+  // --- حقول ثابتة لتبويب بنك الأسئلة ---
+  dynamic _selectedQSubjId;
+  final TextEditingController _qTextCtrl = TextEditingController();
+  final TextEditingController _opt1Ctrl = TextEditingController();
+  final TextEditingController _opt2Ctrl = TextEditingController();
+  final TextEditingController _opt3Ctrl = TextEditingController();
+  final TextEditingController _opt4Ctrl = TextEditingController();
+  int _qCorrectIdx = 0;
+  final TextEditingController _qExpCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _subjNameCtrl.dispose();
+    _subjDescCtrl.dispose();
+    _lecNumCtrl.dispose();
+    _fileTitleCtrl.dispose();
+    _fileUrlCtrl.dispose();
+    _refTitleCtrl.dispose();
+    _refContentCtrl.dispose();
+    _qTextCtrl.dispose();
+    _opt1Ctrl.dispose();
+    _opt2Ctrl.dispose();
+    _opt3Ctrl.dispose();
+    _opt4Ctrl.dispose();
+    _qExpCtrl.dispose();
+    super.dispose();
+  }
+
+  String _formatBytesSize(int bytes) {
+    if (bytes <= 0) return '0 KB';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+
+  String _mapExtToStandardType(String rawExt) {
+    final ext = rawExt.toLowerCase().replaceAll('.', '').trim();
+    if (ext == 'mp3' || ext == 'm4a' || ext == 'wav' || ext == 'ogg' || ext == 'aac') return 'mp3';
+    if (ext == 'mp4' || ext == 'mkv' || ext == 'mov' || ext == 'avi' || ext == 'webm') return 'mp4';
+    if (ext == 'jpg' || ext == 'jpeg' || ext == 'png' || ext == 'webp' || ext == 'gif') return 'jpg';
+    if (ext == 'pdf') return 'pdf';
+    if (ext == 'docx' || ext == 'doc') return 'docx';
+    if (ext == 'xlsx' || ext == 'xls' || ext == 'csv') return 'xlsx';
+    if (ext == 'pptx' || ext == 'ppt') return 'pptx';
+    return 'أخرى';
+  }
+
+  String _mimeTypeForExt(String ext) {
+    switch (ext.toLowerCase()) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'mp3':
+      case 'm4a':
+        return 'audio/mpeg';
+      case 'mp4':
+        return 'video/mp4';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'docx':
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'pptx':
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  /// رفع الملف مع تتبع نسبة التقدم الحقيقية بالبايتات (مثل GitHub)
+  Future<String> _uploadBytesWithRealProgress({
+    required String bucket,
+    required String fileName,
+    required Uint8List bytes,
+    required String contentType,
+  }) async {
+    if (kIsWeb) {
+      if (mounted) setState(() => _uploadProgress = 0.35);
+      await _client.storage.from(bucket).uploadBinary(
+            fileName,
+            bytes,
+            fileOptions: FileOptions(contentType: contentType, upsert: true),
+          );
+      if (mounted) setState(() => _uploadProgress = 1.0);
+      return _client.storage.from(bucket).getPublicUrl(fileName);
+    }
+
+    final storageBase = _client.storage.url; // e.g. https://xxx.supabase.co/storage/v1
+    final uploadUri = Uri.parse('$storageBase/object/$bucket/$fileName');
+    final httpClient = HttpClient();
+    try {
+      final request = await httpClient.postUrl(uploadUri);
+      _client.headers.forEach((key, value) {
+        request.headers.set(key, value);
+      });
+      request.headers.set(HttpHeaders.contentTypeHeader, contentType);
+      request.headers.set('x-upsert', 'true');
+      request.contentLength = bytes.length;
+
+      const int chunkSize = 16384; // 16 KB per chunk
+      int sent = 0;
+      while (sent < bytes.length) {
+        final end = (sent + chunkSize < bytes.length) ? sent + chunkSize : bytes.length;
+        request.add(bytes.sublist(sent, end));
+        await request.flush();
+        sent = end;
+        if (mounted) {
+          setState(() {
+            // نُبقي 95% لإرسال البيانات و 5% لتأكيد الخادم النهائي
+            _uploadProgress = (sent / bytes.length) * 0.95;
+          });
+        }
+      }
+
+      final response = await request.close();
+      final respBody = await response.transform(utf8.decoder).join();
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        if (mounted) setState(() => _uploadProgress = 1.0);
+        return _client.storage.from(bucket).getPublicUrl(fileName);
+      } else {
+        throw Exception('Upload failed (${response.statusCode}): $respBody');
+      }
+    } finally {
+      httpClient.close();
+    }
+  }
 
   bool get _isOwner => _myStudentId.trim() == _ownerId;
 
@@ -296,8 +448,14 @@ class _AdminScreenState extends State<AdminScreen> {
               icon: const Icon(Icons.upload_rounded),
               label: const Text('رفع صورة'),
               onPressed: () async {
-                final picker = ImagePicker();
-                final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+                AppLockGuard.isPickingExternalFile = true;
+                XFile? picked;
+                try {
+                  final picker = ImagePicker();
+                  picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+                } finally {
+                  AppLockGuard.isPickingExternalFile = false;
+                }
                 if (picked == null) return;
                 setState(() => _isLoading = true);
                 try {
@@ -579,374 +737,519 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Widget _buildSubjectsAndFilesTab() {
-    final subjName = TextEditingController();
-    final subjDesc = TextEditingController();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accent = isDark ? const Color(0xFF4FD1C5) : const Color(0xFF0F766E);
 
-    dynamic selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
-    final lecNum = TextEditingController(text: '1');
-    final fileTitle = TextEditingController();
-    final fileType = TextEditingController(text: 'PDF');
-    final fileUrl = TextEditingController();
+    if (_subjects.isNotEmpty) {
+      if (_selectedFileSubjId == null || !_subjects.any((s) => s['id'] == _selectedFileSubjId)) {
+        _selectedFileSubjId = _subjects.first['id'];
+      }
+      if (_selectedRefSubjId == null || !_subjects.any((s) => s['id'] == _selectedRefSubjId)) {
+        _selectedRefSubjId = _subjects.first['id'];
+      }
+    }
 
-    dynamic refSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
-    final refTitleCtrl = TextEditingController();
-    final refContentCtrl = TextEditingController();
-
-    return StatefulBuilder(
-      builder: (context, setInnerState) {
-        final effectiveFileSubjId = _subjects.any((s) => s['id'] == selectedSubjId)
-            ? selectedSubjId
-            : (_subjects.isNotEmpty ? _subjects.first['id'] : null);
-        final effectiveRefSubjId = _subjects.any((s) => s['id'] == refSubjId)
-            ? refSubjId
-            : (_subjects.isNotEmpty ? _subjects.first['id'] : null);
-
-        return ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('📚 إضافة مادة دراسية جديدة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
-          const SizedBox(height: 10),
-          TextField(controller: subjName, decoration: const InputDecoration(labelText: 'اسم المادة (مثلاً: Pharmacology)', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          TextField(controller: subjDesc, decoration: const InputDecoration(labelText: 'وصف مختصر أو اسم الدكتور', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          ElevatedButton(
-            onPressed: () async {
-              if (subjName.text.trim().isEmpty) return;
-              setState(() => _isLoading = true);
-              try {
-                await _client.from('subjects').insert({
-                  'name': subjName.text.trim(),
-                  'subtitle': subjDesc.text.trim(),
-                  'color_hex': '#2B6CB0',
-                  'sort_order': _subjects.length + 1,
-                });
-                await _fetchInitialData();
-                _showMsg('تمت إضافة المادة بنجاح');
-              } catch (_) {
-                _showMsg('تعذر إضافة المادة', isError: true);
-              } finally {
-                if (mounted) setState(() => _isLoading = false);
-              }
-            },
-            child: const Text('إضافة المادة'),
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text('📚 إضافة مادة دراسية جديدة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+        const SizedBox(height: 10),
+        TextField(controller: _subjNameCtrl, decoration: const InputDecoration(labelText: 'اسم المادة (مثلاً: Pharmacology)', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        TextField(controller: _subjDescCtrl, decoration: const InputDecoration(labelText: 'وصف مختصر أو اسم الدكتور', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        ElevatedButton(
+          onPressed: () async {
+            if (_subjNameCtrl.text.trim().isEmpty) return;
+            setState(() => _isLoading = true);
+            try {
+              await _client.from('subjects').insert({
+                'name': _subjNameCtrl.text.trim(),
+                'subtitle': _subjDescCtrl.text.trim(),
+                'color_hex': '#2B6CB0',
+                'sort_order': _subjects.length + 1,
+              });
+              _subjNameCtrl.clear();
+              _subjDescCtrl.clear();
+              await _fetchInitialData();
+              _showMsg('تمت إضافة المادة بنجاح');
+            } catch (_) {
+              _showMsg('تعذر إضافة المادة', isError: true);
+            } finally {
+              if (mounted) setState(() => _isLoading = false);
+            }
+          },
+          child: const Text('إضافة المادة'),
+        ),
+        const Divider(height: 36),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text('📁 إضافة ملف أو محاضرة لمادة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+            IconButton(
+              tooltip: 'تحديث قائمة المواد',
+              icon: const Icon(Icons.refresh_rounded, color: Color(0xFF4FD1C5)),
+              onPressed: () => _fetchInitialData(),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (_subjects.isNotEmpty)
+          DropdownButtonFormField<dynamic>(
+            value: _selectedFileSubjId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
+            items: _subjects
+                .map<DropdownMenuItem<dynamic>>(
+                  (s) => DropdownMenuItem<dynamic>(
+                    value: s['id'],
+                    child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
+                  ),
+                )
+                .toList(),
+            onChanged: (val) => setState(() => _selectedFileSubjId = val),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.orange),
+            ),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('لم يتم تحميل قائمة المواد بعد، اضغط تحديث أو أضف مادة بالأعلى.', style: TextStyle(fontSize: 12)),
+                ),
+                TextButton(
+                  onPressed: () => _fetchInitialData(),
+                  child: const Text('تحديث الآن'),
+                ),
+              ],
+            ),
           ),
-          const Divider(height: 36),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('📁 إضافة ملف أو محاضرة لمادة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-              IconButton(
-                tooltip: 'تحديث قائمة المواد',
-                icon: const Icon(Icons.refresh_rounded, color: Color(0xFF4FD1C5)),
-                onPressed: () async {
-                  await _fetchInitialData();
-                  setInnerState(() {});
-                },
-              ),
-            ],
+        const SizedBox(height: 10),
+        TextField(controller: _lecNumCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رقم المحاضرة', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        TextField(controller: _fileTitleCtrl, decoration: const InputDecoration(labelText: 'عنوان الملف أو المحاضرة', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<String>(
+          value: _selectedFileType,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'نوع الملف (الامتداد)',
+            border: OutlineInputBorder(),
           ),
-          const SizedBox(height: 8),
-          if (_subjects.isNotEmpty)
-            DropdownButtonFormField<dynamic>(
-              value: effectiveFileSubjId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
-              items: _subjects
-                  .map<DropdownMenuItem<dynamic>>(
-                    (s) => DropdownMenuItem<dynamic>(
-                      value: s['id'],
-                      child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
+          items: _fileTypeOptions
+              .map(
+                (t) => DropdownMenuItem<String>(
+                  value: t,
+                  child: Text(t == 'أخرى' ? 'أخرى' : t.toUpperCase()),
+                ),
+              )
+              .toList(),
+          onChanged: (val) {
+            if (val != null) setState(() => _selectedFileType = val);
+          },
+        ),
+        // شريط تقدم الرفع الحقيقي (مثل GitHub) يظهر أثناء الرفع مباشرة
+        if (_isUploadingFile) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: accent.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: accent),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: accent),
                     ),
-                  )
-                  .toList(),
-              onChanged: (val) => setInnerState(() => selectedSubjId = val),
-            )
-          else
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.12),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.orange),
-              ),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text('لم يتم تحميل قائمة المواد بعد، اضغط تحديث أو أضف مادة بالأعلى.', style: TextStyle(fontSize: 12)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'جاري رفع: $_uploadingFileName',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${(_uploadProgress * 100).round()}%',
+                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, color: accent),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: LinearProgressIndicator(
+                    value: _uploadProgress,
+                    minHeight: 7,
+                    backgroundColor: Colors.grey.withOpacity(0.22),
+                    color: accent,
                   ),
-                  TextButton(
-                    onPressed: () async {
-                      await _fetchInitialData();
-                      setInnerState(() {});
-                    },
-                    child: const Text('تحديث الآن'),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${_formatBytesSize((_uploadingFileSizeBytes * _uploadProgress).round())} / ${_formatBytesSize(_uploadingFileSizeBytes)}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+        ],
+        // بطاقة الملف المرفوع تظهر أسفل خانة نوع الملف مباشرة بعد اكتمال الرفع
+        if (_uploadedFilePreview != null && !_isUploadingFile) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.teal.withOpacity(0.13),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.teal),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.teal.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                ],
+                  child: const Icon(Icons.insert_drive_file_rounded, color: Colors.teal, size: 22),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        (_uploadedFilePreview!['name'] ?? '').toString(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${_uploadedFilePreview!['size']} • نوع: ${_uploadedFilePreview!['type'] == 'أخرى' ? 'أخرى' : (_uploadedFilePreview!['type'] ?? '').toString().toUpperCase()} • جاهز للحفظ ✓',
+                        style: const TextStyle(fontSize: 11, color: Colors.teal, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'إزالة الملف المرفوع',
+                  icon: const Icon(Icons.close_rounded, color: Colors.redAccent, size: 20),
+                  onPressed: () {
+                    setState(() {
+                      _uploadedFilePreview = null;
+                      _fileUrlCtrl.clear();
+                    });
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _fileUrlCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'رابط الملف المباشر أو ارفعه من هاتفك',
+                  border: OutlineInputBorder(),
+                ),
               ),
             ),
-          const SizedBox(height: 10),
-          TextField(controller: lecNum, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رقم المحاضرة', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          TextField(controller: fileTitle, decoration: const InputDecoration(labelText: 'عنوان الملف أو المحاضرة', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          TextField(controller: fileType, decoration: const InputDecoration(labelText: 'النوع (PDF / AUDIO / VIDEO)', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: fileUrl,
-                  decoration: const InputDecoration(
-                    labelText: 'رابط الملف المباشر أو ارفعه من هاتفك',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4FD1C5),
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
               ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4FD1C5),
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
-                ),
-                icon: const Icon(Icons.upload_file_rounded),
-                label: const Text('رفع PDF', style: TextStyle(fontWeight: FontWeight.bold)),
-                onPressed: () async {
-                  final result = await FilePicker.platform.pickFiles(
-                    type: FileType.custom,
-                    allowedExtensions: ['pdf', 'mp3', 'm4a', 'mp4', 'doc', 'docx', 'ppt', 'pptx'],
-                    withData: true,
-                  );
-                  if (result == null || result.files.isEmpty) return;
-                  final picked = result.files.first;
+              icon: const Icon(Icons.upload_file_rounded),
+              label: const Text('رفع ملف', style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: _isUploadingFile
+                  ? null
+                  : () async {
+                      AppLockGuard.isPickingExternalFile = true;
+                      FilePickerResult? result;
+                      try {
+                        result = await FilePicker.platform.pickFiles(
+                          type: FileType.any,
+                          withData: true,
+                        );
+                      } finally {
+                        AppLockGuard.isPickingExternalFile = false;
+                      }
+                      if (result == null || result.files.isEmpty) return;
+                      final picked = result.files.first;
+
+                      Uint8List? bytes = picked.bytes;
+                      if (bytes == null && picked.path != null && !kIsWeb) {
+                        bytes = await File(picked.path!).readAsBytes();
+                      }
+                      if (bytes == null) {
+                        _showMsg('تعذر قراءة الملف من الهاتف', isError: true);
+                        return;
+                      }
+
+                      final rawExt = (picked.extension ?? '').toLowerCase();
+                      final safeExt = rawExt.isNotEmpty ? rawExt : 'bin';
+                      final standardType = _mapExtToStandardType(rawExt);
+                      final fileName = 'mat_${DateTime.now().millisecondsSinceEpoch}.$safeExt';
+
+                      setState(() {
+                        _isUploadingFile = true;
+                        _uploadProgress = 0.02;
+                        _uploadingFileName = picked.name;
+                        _uploadingFileSizeBytes = bytes!.length;
+                      });
+
+                      try {
+                        String publicUrl = '';
+                        try {
+                          publicUrl = await _uploadBytesWithRealProgress(
+                            bucket: 'materials',
+                            fileName: fileName,
+                            bytes: bytes,
+                            contentType: _mimeTypeForExt(safeExt),
+                          );
+                        } catch (_) {
+                          publicUrl = await _uploadBytesWithRealProgress(
+                            bucket: 'announcements',
+                            fileName: fileName,
+                            bytes: bytes,
+                            contentType: _mimeTypeForExt(safeExt),
+                          );
+                        }
+
+                        if (!mounted) return;
+                        setState(() {
+                          _isUploadingFile = false;
+                          _fileUrlCtrl.text = publicUrl;
+                          _selectedFileType = standardType;
+                          if (_fileTitleCtrl.text.trim().isEmpty) {
+                            _fileTitleCtrl.text = picked.name.replaceAll(RegExp(r'\.[^.]+$'), '');
+                          }
+                          _uploadedFilePreview = {
+                            'name': picked.name,
+                            'size': _formatBytesSize(bytes!.length),
+                            'type': standardType,
+                            'url': publicUrl,
+                          };
+                        });
+                        _showMsg('تم رفع الملف (${picked.name}) بنجاح ✓ اضغط الآن على حفظ الملف في المادة');
+                      } catch (e) {
+                        if (mounted) setState(() => _isUploadingFile = false);
+                        _showMsg('تعذر رفع الملف، تأكد من الاتصال بالإنترنت وتفعيل Storage', isError: true);
+                      }
+                    },
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        ElevatedButton(
+          onPressed: _isUploadingFile
+              ? null
+              : () async {
+                  if (_selectedFileSubjId == null || _fileTitleCtrl.text.trim().isEmpty || _fileUrlCtrl.text.trim().isEmpty) {
+                    _showMsg('يرجى اختيار المادة وكتابة عنوان الملف ورفعه أولاً', isError: true);
+                    return;
+                  }
                   setState(() => _isLoading = true);
                   try {
-                    Uint8List? bytes = picked.bytes;
-                    if (bytes == null && picked.path != null && !kIsWeb) {
-                      bytes = await File(picked.path!).readAsBytes();
+                    final dbType = _selectedFileType == 'أخرى' ? 'OTHER' : _selectedFileType.toUpperCase();
+                    await _client.from('materials').insert({
+                      'subject_id': _selectedFileSubjId,
+                      'lecture_number': int.tryParse(_lecNumCtrl.text) ?? 1,
+                      'title': _fileTitleCtrl.text.trim(),
+                      'file_type': dbType,
+                      'file_url': _fileUrlCtrl.text.trim(),
+                    });
+                    if (mounted) {
+                      setState(() {
+                        _fileTitleCtrl.clear();
+                        _fileUrlCtrl.clear();
+                        _uploadedFilePreview = null;
+                      });
                     }
-                    if (bytes == null) {
-                      _showMsg('تعذر قراءة الملف من الهاتف', isError: true);
-                      return;
-                    }
-                    final ext = (picked.extension ?? 'pdf').toLowerCase();
-                    final fileName = 'mat_${DateTime.now().millisecondsSinceEpoch}.$ext';
-                    String publicUrl = '';
-                    try {
-                      await _client.storage.from('materials').uploadBinary(
-                            fileName,
-                            bytes,
-                            fileOptions: FileOptions(contentType: ext == 'pdf' ? 'application/pdf' : 'application/octet-stream'),
-                          );
-                      publicUrl = _client.storage.from('materials').getPublicUrl(fileName);
-                    } catch (_) {
-                      await _client.storage.from('announcements').uploadBinary(fileName, bytes);
-                      publicUrl = _client.storage.from('announcements').getPublicUrl(fileName);
-                    }
-                    fileUrl.text = publicUrl;
-                    if (fileTitle.text.trim().isEmpty) {
-                      final cleanTitle = picked.name.replaceAll(RegExp(r'\.[^.]+$'), '');
-                      fileTitle.text = cleanTitle;
-                    }
-                    if (ext == 'mp3' || ext == 'm4a') {
-                      fileType.text = 'AUDIO';
-                    } else if (ext == 'mp4') {
-                      fileType.text = 'VIDEO';
-                    } else {
-                      fileType.text = 'PDF';
-                    }
-                    _showMsg('تم رفع الملف (${picked.name}) بنجاح ✓ اضغط الآن على حفظ الملف في المادة');
-                  } catch (e) {
-                    _showMsg('تعذر رفع الملف، تأكد من الاتصال بالإنترنت وتفعيل Storage', isError: true);
+                    _showMsg('تم حفظ الملف في المادة بنجاح ✓');
+                  } catch (_) {
+                    _showMsg('فشل حفظ الملف في قاعدة البيانات', isError: true);
                   } finally {
                     if (mounted) setState(() => _isLoading = false);
                   }
                 },
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          ElevatedButton(
-            onPressed: () async {
-              if (effectiveFileSubjId == null || fileTitle.text.trim().isEmpty || fileUrl.text.trim().isEmpty) return;
-              setState(() => _isLoading = true);
-              try {
-                await _client.from('materials').insert({
-                  'subject_id': effectiveFileSubjId,
-                  'lecture_number': int.tryParse(lecNum.text) ?? 1,
-                  'title': fileTitle.text.trim(),
-                  'file_type': fileType.text.trim().toUpperCase(),
-                  'file_url': fileUrl.text.trim(),
-                });
-                _showMsg('تم رفع رابط الملف بنجاح');
-              } catch (_) {
-                _showMsg('فشل حفظ الملف', isError: true);
-              } finally {
-                if (mounted) setState(() => _isLoading = false);
-              }
-            },
-            child: const Text('حفظ الملف في المادة'),
-          ),
-          const Divider(height: 36),
-          const Text('🎒 إضافة بطاقة مرجع سريع لمادة (حقيبة ليلة الامتحان)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
-          const SizedBox(height: 6),
-          const Text('تظهر مقسمة حسب كل مادة داخل حقيبة المراجعة ليلة الامتحان وتعمل بدون إنترنت.', style: TextStyle(fontSize: 12, color: Colors.grey)),
-          const SizedBox(height: 10),
-          if (_subjects.isNotEmpty)
-            DropdownButtonFormField<dynamic>(
-              value: effectiveRefSubjId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'المادة المرتبطة', border: OutlineInputBorder()),
-              items: _subjects
-                  .map<DropdownMenuItem<dynamic>>(
-                    (s) => DropdownMenuItem<dynamic>(
-                      value: s['id'],
-                      child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (val) => setInnerState(() => refSubjId = val),
-            ),
-          const SizedBox(height: 8),
-          TextField(controller: refTitleCtrl, decoration: const InputDecoration(labelText: 'عنوان البطاقة (مثلاً: تصنيف أدوية الضغط)', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: refContentCtrl, maxLines: 4, decoration: const InputDecoration(labelText: 'المحتوى المختصر والقوانين أو الملاحظات', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
-            icon: const Icon(Icons.bookmark_add_rounded),
-            label: const Text('حفظ البطاقة في مرجع المادة', style: TextStyle(fontWeight: FontWeight.bold)),
-            onPressed: () async {
-              if (effectiveRefSubjId == null || refTitleCtrl.text.trim().isEmpty || refContentCtrl.text.trim().isEmpty) return;
-              setState(() => _isLoading = true);
-              try {
-                await _client.from('subject_references').insert({
-                  'subject_id': effectiveRefSubjId,
-                  'title': refTitleCtrl.text.trim(),
-                  'content': refContentCtrl.text.trim(),
-                });
-                await _fetchInitialData();
-                _showMsg('تمت إضافة بطاقة المرجع للمادة بنجاح ✓');
-              } catch (_) {
-                _showMsg('فشل الحفظ، تأكد من إنشاء جدول subject_references', isError: true);
-              } finally {
-                if (mounted) setState(() => _isLoading = false);
-              }
-            },
-          ),
-          if (_subjectRefs.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            ..._subjectRefs.take(15).map((r) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.menu_book_rounded, color: Color(0xFF4FD1C5)),
-                  title: Text(r['title'] ?? ''),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                    onPressed: () async {
-                      await _client.from('subject_references').delete().eq('id', r['id']);
-                      await _fetchInitialData();
-                    },
+          child: const Text('حفظ الملف في المادة'),
+        ),
+        const Divider(height: 36),
+        const Text('🎒 إضافة بطاقة مرجع سريع لمادة (حقيبة ليلة الامتحان)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+        const SizedBox(height: 6),
+        const Text('تظهر مقسمة حسب كل مادة داخل حقيبة المراجعة ليلة الامتحان وتعمل بدون إنترنت.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 10),
+        if (_subjects.isNotEmpty)
+          DropdownButtonFormField<dynamic>(
+            value: _selectedRefSubjId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'المادة المرتبطة', border: OutlineInputBorder()),
+            items: _subjects
+                .map<DropdownMenuItem<dynamic>>(
+                  (s) => DropdownMenuItem<dynamic>(
+                    value: s['id'],
+                    child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
                   ),
-                )),
-          ],
+                )
+                .toList(),
+            onChanged: (val) => setState(() => _selectedRefSubjId = val),
+          ),
+        const SizedBox(height: 8),
+        TextField(controller: _refTitleCtrl, decoration: const InputDecoration(labelText: 'عنوان البطاقة (مثلاً: تصنيف أدوية الضغط)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(controller: _refContentCtrl, maxLines: 4, decoration: const InputDecoration(labelText: 'المحتوى المختصر والقوانين أو الملاحظات', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+          icon: const Icon(Icons.bookmark_add_rounded),
+          label: const Text('حفظ البطاقة في مرجع المادة', style: TextStyle(fontWeight: FontWeight.bold)),
+          onPressed: () async {
+            if (_selectedRefSubjId == null || _refTitleCtrl.text.trim().isEmpty || _refContentCtrl.text.trim().isEmpty) return;
+            setState(() => _isLoading = true);
+            try {
+              await _client.from('subject_references').insert({
+                'subject_id': _selectedRefSubjId,
+                'title': _refTitleCtrl.text.trim(),
+                'content': _refContentCtrl.text.trim(),
+              });
+              _refTitleCtrl.clear();
+              _refContentCtrl.clear();
+              await _fetchInitialData();
+              _showMsg('تمت إضافة بطاقة المرجع للمادة بنجاح ✓');
+            } catch (_) {
+              _showMsg('فشل الحفظ، تأكد من إنشاء جدول subject_references', isError: true);
+            } finally {
+              if (mounted) setState(() => _isLoading = false);
+            }
+          },
+        ),
+        if (_subjectRefs.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          ..._subjectRefs.take(15).map((r) => ListTile(
+                dense: true,
+                leading: const Icon(Icons.menu_book_rounded, color: Color(0xFF4FD1C5)),
+                title: Text(r['title'] ?? ''),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                  onPressed: () async {
+                    await _client.from('subject_references').delete().eq('id', r['id']);
+                    await _fetchInitialData();
+                  },
+                ),
+              )),
         ],
-      );
-      },
+      ],
     );
   }
 
   Widget _buildAddQuestionTab() {
-    dynamic selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
-    final qText = TextEditingController();
-    final opt1 = TextEditingController();
-    final opt2 = TextEditingController();
-    final opt3 = TextEditingController();
-    final opt4 = TextEditingController();
-    int correctIdx = 0;
-    final expCtrl = TextEditingController();
+    if (_subjects.isNotEmpty) {
+      if (_selectedQSubjId == null || !_subjects.any((s) => s['id'] == _selectedQSubjId)) {
+        _selectedQSubjId = _subjects.first['id'];
+      }
+    }
 
-    return StatefulBuilder(
-      builder: (context, setInnerState) {
-        final effectiveQSubjId = _subjects.any((s) => s['id'] == selectedSubjId)
-            ? selectedSubjId
-            : (_subjects.isNotEmpty ? _subjects.first['id'] : null);
-
-        return ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('❓ إضافة سؤال جديد لبنك الأسئلة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
-          const SizedBox(height: 12),
-          if (_subjects.isNotEmpty)
-            DropdownButtonFormField<dynamic>(
-              value: effectiveQSubjId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
-              items: _subjects
-                  .map<DropdownMenuItem<dynamic>>(
-                    (s) => DropdownMenuItem<dynamic>(
-                      value: s['id'],
-                      child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (val) => setInnerState(() => selectedSubjId = val),
-            ),
-          const SizedBox(height: 10),
-          TextField(controller: qText, maxLines: 2, decoration: const InputDecoration(labelText: 'نص السؤال', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          TextField(controller: opt1, decoration: const InputDecoration(labelText: 'الخيار الأول (A)', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: opt2, decoration: const InputDecoration(labelText: 'الخيار الثاني (B)', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: opt3, decoration: const InputDecoration(labelText: 'الخيار الثالث (C)', border: OutlineInputBorder())),
-          const SizedBox(height: 8),
-          TextField(controller: opt4, decoration: const InputDecoration(labelText: 'الخيار الرابع (D)', border: OutlineInputBorder())),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<int>(
-            value: correctIdx,
-            decoration: const InputDecoration(labelText: 'الإجابة الصحيحة', border: OutlineInputBorder()),
-            items: const [
-              DropdownMenuItem(value: 0, child: Text('الخيار الأول (A)')),
-              DropdownMenuItem(value: 1, child: Text('الخيار الثاني (B)')),
-              DropdownMenuItem(value: 2, child: Text('الخيار الثالث (C)')),
-              DropdownMenuItem(value: 3, child: Text('الخيار الرابع (D)')),
-            ],
-            onChanged: (val) => setInnerState(() => correctIdx = val ?? 0),
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text('❓ إضافة سؤال جديد لبنك الأسئلة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
+        const SizedBox(height: 12),
+        if (_subjects.isNotEmpty)
+          DropdownButtonFormField<dynamic>(
+            value: _selectedQSubjId,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
+            items: _subjects
+                .map<DropdownMenuItem<dynamic>>(
+                  (s) => DropdownMenuItem<dynamic>(
+                    value: s['id'],
+                    child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
+                  ),
+                )
+                .toList(),
+            onChanged: (val) => setState(() => _selectedQSubjId = val),
           ),
-          const SizedBox(height: 10),
-          TextField(controller: expCtrl, decoration: const InputDecoration(labelText: 'توضيح الإجابة (اختياري)', border: OutlineInputBorder())),
-          const SizedBox(height: 14),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
-            onPressed: () async {
-              if (effectiveQSubjId == null || qText.text.trim().isEmpty) return;
-              final opts = [opt1.text.trim(), opt2.text.trim(), opt3.text.trim(), opt4.text.trim()].where((e) => e.isNotEmpty).toList();
-              if (opts.length < 2) {
-                _showMsg('أدخل خيارين على الأقل', isError: true);
-                return;
-              }
-              setState(() => _isLoading = true);
-              try {
-                await _client.from('questions').insert({
-                  'subject_id': effectiveQSubjId,
-                  'question_text': qText.text.trim(),
-                  'options': jsonEncode(opts),
-                  'correct_index': correctIdx,
-                  'explanation': expCtrl.text.trim(),
-                });
-                _showMsg('تمت إضافة السؤال لبنك المادة بنجاح');
-              } catch (_) {
-                _showMsg('فشل حفظ السؤال', isError: true);
-              } finally {
-                if (mounted) setState(() => _isLoading = false);
-              }
-            },
-            child: const Text('حفظ السؤال في البنك'),
-          ),
-        ],
-      );
-      },
+        const SizedBox(height: 10),
+        TextField(controller: _qTextCtrl, maxLines: 2, decoration: const InputDecoration(labelText: 'نص السؤال', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        TextField(controller: _opt1Ctrl, decoration: const InputDecoration(labelText: 'الخيار الأول (A)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(controller: _opt2Ctrl, decoration: const InputDecoration(labelText: 'الخيار الثاني (B)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(controller: _opt3Ctrl, decoration: const InputDecoration(labelText: 'الخيار الثالث (C)', border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(controller: _opt4Ctrl, decoration: const InputDecoration(labelText: 'الخيار الرابع (D)', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        DropdownButtonFormField<int>(
+          value: _qCorrectIdx,
+          decoration: const InputDecoration(labelText: 'الإجابة الصحيحة', border: OutlineInputBorder()),
+          items: const [
+            DropdownMenuItem(value: 0, child: Text('الخيار الأول (A)')),
+            DropdownMenuItem(value: 1, child: Text('الخيار الثاني (B)')),
+            DropdownMenuItem(value: 2, child: Text('الخيار الثالث (C)')),
+            DropdownMenuItem(value: 3, child: Text('الخيار الرابع (D)')),
+          ],
+          onChanged: (val) => setState(() => _qCorrectIdx = val ?? 0),
+        ),
+        const SizedBox(height: 10),
+        TextField(controller: _qExpCtrl, decoration: const InputDecoration(labelText: 'توضيح الإجابة (اختياري)', border: OutlineInputBorder())),
+        const SizedBox(height: 14),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
+          onPressed: () async {
+            if (_selectedQSubjId == null || _qTextCtrl.text.trim().isEmpty) return;
+            final opts = [_opt1Ctrl.text.trim(), _opt2Ctrl.text.trim(), _opt3Ctrl.text.trim(), _opt4Ctrl.text.trim()].where((e) => e.isNotEmpty).toList();
+            if (opts.length < 2) {
+              _showMsg('أدخل خيارين على الأقل', isError: true);
+              return;
+            }
+            setState(() => _isLoading = true);
+            try {
+              await _client.from('questions').insert({
+                'subject_id': _selectedQSubjId,
+                'question_text': _qTextCtrl.text.trim(),
+                'options': jsonEncode(opts),
+                'correct_index': _qCorrectIdx,
+                'explanation': _qExpCtrl.text.trim(),
+              });
+              _qTextCtrl.clear();
+              _opt1Ctrl.clear();
+              _opt2Ctrl.clear();
+              _opt3Ctrl.clear();
+              _opt4Ctrl.clear();
+              _qExpCtrl.clear();
+              _showMsg('تمت إضافة السؤال لبنك المادة بنجاح');
+            } catch (_) {
+              _showMsg('فشل حفظ السؤال', isError: true);
+            } finally {
+              if (mounted) setState(() => _isLoading = false);
+            }
+          },
+          child: const Text('حفظ السؤال في البنك'),
+        ),
+      ],
     );
   }
 
@@ -1214,8 +1517,14 @@ class _AdminScreenState extends State<AdminScreen> {
                   icon: const Icon(Icons.upload_file_rounded),
                   label: const Text('اختيار ورفع شعار جديد (PNG شفاف)', style: TextStyle(fontWeight: FontWeight.bold)),
                   onPressed: () async {
-                    final picker = ImagePicker();
-                    final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 90);
+                    AppLockGuard.isPickingExternalFile = true;
+                    XFile? picked;
+                    try {
+                      final picker = ImagePicker();
+                      picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 90);
+                    } finally {
+                      AppLockGuard.isPickingExternalFile = false;
+                    }
                     if (picked == null) return;
                     setState(() => _isLoading = true);
                     try {

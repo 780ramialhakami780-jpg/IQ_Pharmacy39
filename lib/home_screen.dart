@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'app_prefs.dart';
+import 'main.dart';
 import 'subject_screen.dart';
 import 'admin_screen.dart';
 import 'gpa_screen.dart';
@@ -552,7 +553,9 @@ class _HomeScreenState extends State<HomeScreen> {
               setState(() => _currentIndex = 0);
               return;
             }
+            AppLockGuard.notifyExitDialogOpening();
             await StartupManager.showExitDialog(context);
+            AppLockGuard.clearExitDialogFlag();
           },
           child: _wrapWithWallpaper(
             Scaffold(

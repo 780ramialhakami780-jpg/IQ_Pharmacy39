@@ -29,6 +29,31 @@ void main() async {
   runApp(IQPharmacyApp(isRegistered: isRegistered));
 }
 
+/// حارس القفل الذكي: يمنع قفل التطبيق أثناء اختيار الملفات/الصور أو التنقل المؤقت لأقل من 5 دقائق،
+/// ويقفل التطبيق فوراً عند الفتح الجديد (بعد إغلاقه من التطبيقات الأخيرة) أو عند الخروج من واجهة تأكيد الخروج.
+class AppLockGuard {
+  static bool isPickingExternalFile = false;
+  static DateTime? _exitDialogOpenedAt;
+  static VoidCallback? onForceLockRequested;
+
+  static void notifyExitDialogOpening() {
+    _exitDialogOpenedAt = DateTime.now();
+  }
+
+  static void clearExitDialogFlag() {
+    _exitDialogOpenedAt = null;
+  }
+
+  static bool get wasExitConfirmedRecently {
+    if (_exitDialogOpenedAt == null) return false;
+    return DateTime.now().difference(_exitDialogOpenedAt!) < const Duration(seconds: 15);
+  }
+
+  static void lockNow() {
+    onForceLockRequested?.call();
+  }
+}
+
 class IQPharmacyApp extends StatefulWidget {
   final bool isRegistered;
   const IQPharmacyApp({super.key, required this.isRegistered});
@@ -38,16 +63,23 @@ class IQPharmacyApp extends StatefulWidget {
 }
 
 class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserver {
+  static const Duration _gracePeriod = Duration(minutes: 5);
   final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
   late bool _isRegistered;
   bool _isLocked = false;
-  bool _wentBackground = false;
+  DateTime? _backgroundSince;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _isRegistered = widget.isRegistered;
+    AppLockGuard.onForceLockRequested = () {
+      if (_isRegistered && _hasAnyLockEnabled && mounted && !_isLocked) {
+        setState(() => _isLocked = true);
+      }
+    };
+    // عند التشغيل الجديد للتطبيق (أو بعد حذفه من التطبيقات المفتوحة مؤخراً) يُقفل فوراً
     if (_isRegistered && _hasAnyLockEnabled) {
       _isLocked = true;
     }
@@ -55,6 +87,9 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
 
   @override
   void dispose() {
+    if (AppLockGuard.onForceLockRequested != null) {
+      AppLockGuard.onForceLockRequested = null;
+    }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -64,18 +99,37 @@ class _IQPharmacyAppState extends State<IQPharmacyApp> with WidgetsBindingObserv
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!_isRegistered) return;
-    if (BiometricHelper.isAuthenticating) return;
+    if (!_isRegistered || !_hasAnyLockEnabled) return;
+    if (BiometricHelper.isAuthenticating || AppLockGuard.isPickingExternalFile) {
+      _backgroundSince = null;
+      return;
+    }
 
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
-      _wentBackground = true;
-      if (_hasAnyLockEnabled && !_isLocked) {
+    if (state == AppLifecycleState.detached) {
+      if (!_isLocked) {
         setState(() => _isLocked = true);
       }
+      return;
+    }
+
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      // إذا خرج المستخدم عبر واجهة تأكيد الخروج
+      if (AppLockGuard.wasExitConfirmedRecently) {
+        AppLockGuard.clearExitDialogFlag();
+        _backgroundSince = null;
+        if (!_isLocked) {
+          setState(() => _isLocked = true);
+        }
+        return;
+      }
+      // تسجيل لحظة الخروج المؤقت لبدء احتساب مهلة الـ 5 دقائق
+      _backgroundSince ??= DateTime.now();
     } else if (state == AppLifecycleState.resumed) {
-      if (_wentBackground) {
-        _wentBackground = false;
-        if (_hasAnyLockEnabled && !_isLocked) {
+      AppLockGuard.clearExitDialogFlag();
+      if (_backgroundSince != null) {
+        final absentDuration = DateTime.now().difference(_backgroundSince!);
+        _backgroundSince = null;
+        if (absentDuration >= _gracePeriod && !_isLocked) {
           setState(() => _isLocked = true);
         }
       }
