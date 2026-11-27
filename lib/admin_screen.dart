@@ -38,49 +38,77 @@ class _AdminScreenState extends State<AdminScreen> {
   }
 
   Future<void> _fetchInitialData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final myId = prefs.getString('student_id') ?? '';
+
+    List<dynamic> subjs = [];
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final myId = prefs.getString('student_id') ?? '';
+      final cachedRaw = prefs.getString('cache_subjects');
+      if (cachedRaw != null && cachedRaw.isNotEmpty) {
+        subjs = jsonDecode(cachedRaw) as List<dynamic>;
+      }
+    } catch (_) {}
 
-      final subjs = await _client.from('subjects').select().order('sort_order');
-      final att = await _client.from('attendance').select().order('created_at', ascending: false).limit(500);
-      List<dynamic> anns = [];
-      List<dynamic> supps = [];
-      List<dynamic> refs = [];
-      final Map<String, String> emailMap = {};
-
-      try {
-        anns = await _client.from('announcements').select().order('created_at', ascending: false);
-      } catch (_) {}
-
-      try {
-        supps = await _client.from('support_contacts').select().order('sort_order');
-      } catch (_) {}
-
-      try {
-        refs = await _client.from('subject_references').select().order('created_at', ascending: false);
-      } catch (_) {}
-
-      try {
-        final studs = await _client.from('students').select('student_id, university_email');
-        for (var s in studs) {
-          if (s['university_email'] != null && s['university_email'].toString().isNotEmpty) {
-            emailMap[s['student_id'].toString()] = s['university_email'].toString();
-          }
-        }
-      } catch (_) {}
-
-      if (!mounted) return;
+    if (mounted) {
       setState(() {
         _myStudentId = myId;
-        _subjects = subjs;
-        _attendance = att;
-        _announcements = anns;
-        _supportContacts = supps;
-        _subjectRefs = refs;
-        _studentEmails = emailMap;
+        if (subjs.isNotEmpty && _subjects.isEmpty) {
+          _subjects = subjs;
+        }
       });
+    }
+
+    try {
+      subjs = await _client.from('subjects').select().order('sort_order');
+      await prefs.setString('cache_subjects', jsonEncode(subjs));
+    } catch (_) {
+      try {
+        subjs = await _client.from('subjects').select();
+        await prefs.setString('cache_subjects', jsonEncode(subjs));
+      } catch (_) {}
+    }
+
+    List<dynamic> att = _attendance;
+    try {
+      att = await _client.from('attendance').select().order('created_at', ascending: false).limit(500);
     } catch (_) {}
+
+    List<dynamic> anns = _announcements;
+    List<dynamic> supps = _supportContacts;
+    List<dynamic> refs = _subjectRefs;
+    final Map<String, String> emailMap = Map<String, String>.from(_studentEmails);
+
+    try {
+      anns = await _client.from('announcements').select().order('created_at', ascending: false);
+    } catch (_) {}
+
+    try {
+      supps = await _client.from('support_contacts').select().order('sort_order');
+    } catch (_) {}
+
+    try {
+      refs = await _client.from('subject_references').select().order('created_at', ascending: false);
+    } catch (_) {}
+
+    try {
+      final studs = await _client.from('students').select('student_id, university_email');
+      for (var s in studs) {
+        if (s['university_email'] != null && s['university_email'].toString().isNotEmpty) {
+          emailMap[s['student_id'].toString()] = s['university_email'].toString();
+        }
+      }
+    } catch (_) {}
+
+    if (!mounted) return;
+    setState(() {
+      _myStudentId = myId;
+      _subjects = subjs;
+      _attendance = att;
+      _announcements = anns;
+      _supportContacts = supps;
+      _subjectRefs = refs;
+      _studentEmails = emailMap;
+    });
   }
 
   void _showMsg(String text, {bool isError = false}) {
@@ -554,18 +582,26 @@ class _AdminScreenState extends State<AdminScreen> {
     final subjName = TextEditingController();
     final subjDesc = TextEditingController();
 
-    int? selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
+    dynamic selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
     final lecNum = TextEditingController(text: '1');
     final fileTitle = TextEditingController();
     final fileType = TextEditingController(text: 'PDF');
     final fileUrl = TextEditingController();
 
-    int? refSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
+    dynamic refSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
     final refTitleCtrl = TextEditingController();
     final refContentCtrl = TextEditingController();
 
     return StatefulBuilder(
-      builder: (context, setInnerState) => ListView(
+      builder: (context, setInnerState) {
+        final effectiveFileSubjId = _subjects.any((s) => s['id'] == selectedSubjId)
+            ? selectedSubjId
+            : (_subjects.isNotEmpty ? _subjects.first['id'] : null);
+        final effectiveRefSubjId = _subjects.any((s) => s['id'] == refSubjId)
+            ? refSubjId
+            : (_subjects.isNotEmpty ? _subjects.first['id'] : null);
+
+        return ListView(
         padding: const EdgeInsets.all(16),
         children: [
           const Text('📚 إضافة مادة دراسية جديدة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
@@ -596,14 +632,58 @@ class _AdminScreenState extends State<AdminScreen> {
             child: const Text('إضافة المادة'),
           ),
           const Divider(height: 36),
-          const Text('📁 إضافة ملف أو محاضرة لمادة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('📁 إضافة ملف أو محاضرة لمادة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+              IconButton(
+                tooltip: 'تحديث قائمة المواد',
+                icon: const Icon(Icons.refresh_rounded, color: Color(0xFF4FD1C5)),
+                onPressed: () async {
+                  await _fetchInitialData();
+                  setInnerState(() {});
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           if (_subjects.isNotEmpty)
-            DropdownButtonFormField<int>(
-              value: selectedSubjId,
+            DropdownButtonFormField<dynamic>(
+              value: effectiveFileSubjId,
+              isExpanded: true,
               decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
-              items: _subjects.map<DropdownMenuItem<int>>((s) => DropdownMenuItem(value: s['id'], child: Text(s['name']))).toList(),
+              items: _subjects
+                  .map<DropdownMenuItem<dynamic>>(
+                    (s) => DropdownMenuItem<dynamic>(
+                      value: s['id'],
+                      child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
+                    ),
+                  )
+                  .toList(),
               onChanged: (val) => setInnerState(() => selectedSubjId = val),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text('لم يتم تحميل قائمة المواد بعد، اضغط تحديث أو أضف مادة بالأعلى.', style: TextStyle(fontSize: 12)),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      await _fetchInitialData();
+                      setInnerState(() {});
+                    },
+                    child: const Text('تحديث الآن'),
+                  ),
+                ],
+              ),
             ),
           const SizedBox(height: 10),
           TextField(controller: lecNum, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'رقم المحاضرة', border: OutlineInputBorder())),
@@ -689,11 +769,11 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(height: 10),
           ElevatedButton(
             onPressed: () async {
-              if (selectedSubjId == null || fileTitle.text.trim().isEmpty || fileUrl.text.trim().isEmpty) return;
+              if (effectiveFileSubjId == null || fileTitle.text.trim().isEmpty || fileUrl.text.trim().isEmpty) return;
               setState(() => _isLoading = true);
               try {
                 await _client.from('materials').insert({
-                  'subject_id': selectedSubjId,
+                  'subject_id': effectiveFileSubjId,
                   'lecture_number': int.tryParse(lecNum.text) ?? 1,
                   'title': fileTitle.text.trim(),
                   'file_type': fileType.text.trim().toUpperCase(),
@@ -714,10 +794,18 @@ class _AdminScreenState extends State<AdminScreen> {
           const Text('تظهر مقسمة حسب كل مادة داخل حقيبة المراجعة ليلة الامتحان وتعمل بدون إنترنت.', style: TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 10),
           if (_subjects.isNotEmpty)
-            DropdownButtonFormField<int>(
-              value: refSubjId,
+            DropdownButtonFormField<dynamic>(
+              value: effectiveRefSubjId,
+              isExpanded: true,
               decoration: const InputDecoration(labelText: 'المادة المرتبطة', border: OutlineInputBorder()),
-              items: _subjects.map<DropdownMenuItem<int>>((s) => DropdownMenuItem(value: s['id'], child: Text(s['name']))).toList(),
+              items: _subjects
+                  .map<DropdownMenuItem<dynamic>>(
+                    (s) => DropdownMenuItem<dynamic>(
+                      value: s['id'],
+                      child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
+                    ),
+                  )
+                  .toList(),
               onChanged: (val) => setInnerState(() => refSubjId = val),
             ),
           const SizedBox(height: 8),
@@ -730,11 +818,11 @@ class _AdminScreenState extends State<AdminScreen> {
             icon: const Icon(Icons.bookmark_add_rounded),
             label: const Text('حفظ البطاقة في مرجع المادة', style: TextStyle(fontWeight: FontWeight.bold)),
             onPressed: () async {
-              if (refSubjId == null || refTitleCtrl.text.trim().isEmpty || refContentCtrl.text.trim().isEmpty) return;
+              if (effectiveRefSubjId == null || refTitleCtrl.text.trim().isEmpty || refContentCtrl.text.trim().isEmpty) return;
               setState(() => _isLoading = true);
               try {
                 await _client.from('subject_references').insert({
-                  'subject_id': refSubjId,
+                  'subject_id': effectiveRefSubjId,
                   'title': refTitleCtrl.text.trim(),
                   'content': refContentCtrl.text.trim(),
                 });
@@ -763,12 +851,13 @@ class _AdminScreenState extends State<AdminScreen> {
                 )),
           ],
         ],
-      ),
+      );
+      },
     );
   }
 
   Widget _buildAddQuestionTab() {
-    int? selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
+    dynamic selectedSubjId = _subjects.isNotEmpty ? _subjects.first['id'] : null;
     final qText = TextEditingController();
     final opt1 = TextEditingController();
     final opt2 = TextEditingController();
@@ -778,16 +867,29 @@ class _AdminScreenState extends State<AdminScreen> {
     final expCtrl = TextEditingController();
 
     return StatefulBuilder(
-      builder: (context, setInnerState) => ListView(
+      builder: (context, setInnerState) {
+        final effectiveQSubjId = _subjects.any((s) => s['id'] == selectedSubjId)
+            ? selectedSubjId
+            : (_subjects.isNotEmpty ? _subjects.first['id'] : null);
+
+        return ListView(
         padding: const EdgeInsets.all(16),
         children: [
           const Text('❓ إضافة سؤال جديد لبنك الأسئلة', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF4FD1C5))),
           const SizedBox(height: 12),
           if (_subjects.isNotEmpty)
-            DropdownButtonFormField<int>(
-              value: selectedSubjId,
+            DropdownButtonFormField<dynamic>(
+              value: effectiveQSubjId,
+              isExpanded: true,
               decoration: const InputDecoration(labelText: 'اختر المادة', border: OutlineInputBorder()),
-              items: _subjects.map<DropdownMenuItem<int>>((s) => DropdownMenuItem(value: s['id'], child: Text(s['name']))).toList(),
+              items: _subjects
+                  .map<DropdownMenuItem<dynamic>>(
+                    (s) => DropdownMenuItem<dynamic>(
+                      value: s['id'],
+                      child: Text((s['name'] ?? '').toString(), overflow: TextOverflow.ellipsis),
+                    ),
+                  )
+                  .toList(),
               onChanged: (val) => setInnerState(() => selectedSubjId = val),
             ),
           const SizedBox(height: 10),
@@ -818,7 +920,7 @@ class _AdminScreenState extends State<AdminScreen> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4FD1C5), foregroundColor: Colors.black),
             onPressed: () async {
-              if (selectedSubjId == null || qText.text.trim().isEmpty) return;
+              if (effectiveQSubjId == null || qText.text.trim().isEmpty) return;
               final opts = [opt1.text.trim(), opt2.text.trim(), opt3.text.trim(), opt4.text.trim()].where((e) => e.isNotEmpty).toList();
               if (opts.length < 2) {
                 _showMsg('أدخل خيارين على الأقل', isError: true);
@@ -827,7 +929,7 @@ class _AdminScreenState extends State<AdminScreen> {
               setState(() => _isLoading = true);
               try {
                 await _client.from('questions').insert({
-                  'subject_id': selectedSubjId,
+                  'subject_id': effectiveQSubjId,
                   'question_text': qText.text.trim(),
                   'options': jsonEncode(opts),
                   'correct_index': correctIdx,
@@ -843,7 +945,8 @@ class _AdminScreenState extends State<AdminScreen> {
             child: const Text('حفظ السؤال في البنك'),
           ),
         ],
-      ),
+      );
+      },
     );
   }
 
