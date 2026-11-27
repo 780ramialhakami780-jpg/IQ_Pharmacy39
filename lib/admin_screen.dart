@@ -40,7 +40,7 @@ class _AdminScreenState extends State<AdminScreen> {
   List<dynamic> _supportContacts = [];
   List<dynamic> _subjectRefs = [];
   Map<String, String> _calendarOccasions = {};
-  List> _batchDirectory = [];
+  List<Map<String, dynamic>> _batchDirectory = [];
   Map<String, String> _studentEmails = {};
   bool _isLoading = false;
 
@@ -107,6 +107,7 @@ class _AdminScreenState extends State<AdminScreen> {
   String _selectedAttendanceSession = 'الكل';
 
   // --- التبويب 5: حقول ثابتة للدعم والأجهزة والتحديث ---
+
   final TextEditingController _latestVerCtrl = TextEditingController(text: '1.3.0');
   final TextEditingController _minVerCtrl = TextEditingController(text: '1.0.0');
   final TextEditingController _updateUrlCtrl = TextEditingController(
@@ -182,6 +183,7 @@ class _AdminScreenState extends State<AdminScreen> {
     _hallCtrl.dispose();
     _docCtrl.dispose();
 
+
     _latestVerCtrl.dispose();
     _minVerCtrl.dispose();
     _updateUrlCtrl.dispose();
@@ -250,6 +252,7 @@ class _AdminScreenState extends State<AdminScreen> {
     }
   }
 
+  /// رفع الملفات أو الصور مع تتبع نسبة التقدم الحقيقية بالبايتات ومسار احتياطي متعدد المخازن
   Future<String> _uploadBytesWithRealProgress({
     required String bucket,
     required String fileName,
@@ -432,6 +435,7 @@ class _AdminScreenState extends State<AdminScreen> {
       }
     } catch (_) {}
 
+    // تحميل إعدادات التطبيق وكلمات مرور المشرفين والمناسبات والدليل
     try {
       final settingsRows = await _client.from('app_settings').select('key, value');
       for (final row in settingsRows) {
@@ -464,6 +468,7 @@ class _AdminScreenState extends State<AdminScreen> {
             if (_devWaCtrl.text.isEmpty) _devWaCtrl.text = (info['whatsapp'] ?? '').toString();
             if (_devTgCtrl.text.isEmpty) _devTgCtrl.text = (info['telegram'] ?? '').toString();
           } catch (_) {}
+
         }
       }
     } catch (_) {}
@@ -662,6 +667,9 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
+  // =========================================================================
+  // التبويب 1: الإعلانات والتصويت والمناسبات والتنبيهات والتكاليف
+  // =========================================================================
   Widget _buildNotificationsAndTasksTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -774,6 +782,7 @@ class _AdminScreenState extends State<AdminScreen> {
                   'is_active': true,
                 });
               } catch (_) {
+                // مسار احتياطي إذا كانت الأعمدة الإضافية للتصويت غير مضافة في الجدول القديم
                 await _client.from('announcements').insert({
                   'title': title,
                   'description': _annDescCtrl.text.trim(),
@@ -1079,6 +1088,9 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
+  // =========================================================================
+  // التبويب 2: المواد والملفات والمحاضرات وبطاقات المرجع السريع
+  // =========================================================================
   Widget _buildSubjectsAndFilesTab() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final accent = isDark ? const Color(0xFF4FD1C5) : const Color(0xFF0F766E);
@@ -1537,6 +1549,9 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
+  // =========================================================================
+  // التبويب 3: بنك الأسئلة
+  // =========================================================================
   Widget _buildAddQuestionTab() {
     if (_subjects.isNotEmpty) {
       if (_selectedQSubjId == null || !_subjects.any((s) => s['id'] == _selectedQSubjId)) {
@@ -1652,6 +1667,9 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
+  // =========================================================================
+  // التبويب 4: الجدول وكشف الحضور ورادار التحضير
+  // =========================================================================
   Widget _buildScheduleAndAttendanceTab() {
     final sessionCodes = <String>{
       'الكل',
@@ -1918,6 +1936,9 @@ class _AdminScreenState extends State<AdminScreen> {
     );
   }
 
+  // =========================================================================
+  // التبويب 5: تقسيم المهام وكلمات المرور + الدعم والأجهزة والتحديث
+  // =========================================================================
   Widget _buildDevicesAndDirectoryTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -2234,7 +2255,7 @@ class _AdminScreenState extends State<AdminScreen> {
             if (_dirTitleCtrl.text.trim().isEmpty || _dirValueCtrl.text.trim().isEmpty) return;
             setState(() => _isLoading = true);
             try {
-              final updatedDir = List>.from(_batchDirectory);
+              final updatedDir = List<Map<String, dynamic>>.from(_batchDirectory);
               updatedDir.add({
                 'title': _dirTitleCtrl.text.trim(),
                 'value': _dirValueCtrl.text.trim(),
@@ -2267,7 +2288,7 @@ class _AdminScreenState extends State<AdminScreen> {
               trailing: IconButton(
                 icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
                 onPressed: () async {
-                  final updatedDir = List>.from(_batchDirectory)..removeAt(i);
+                  final updatedDir = List<Map<String, dynamic>>.from(_batchDirectory)..removeAt(i);
                   await _client.from('app_settings').upsert({'key': 'batch_directory', 'value': jsonEncode(updatedDir)});
                   setState(() => _batchDirectory = updatedDir);
                   _showMsg('تم الحذف من الدليل');

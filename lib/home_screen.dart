@@ -2916,24 +2916,61 @@ class _HomeScreenState extends State<HomeScreen> {
       if (bioOk && mounted) {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => AdminScreen(adminName: _studentName)),
+          MaterialPageRoute(
+            builder: (_) => AdminScreen(
+              adminName: _studentName,
+              allowedTabs: const [0, 1, 2, 3, 4],
+              isFullAccess: true,
+            ),
+          ),
         );
         return;
       }
     }
 
     final prefs = await SharedPreferences.getInstance();
-    String activePin = prefs.getString('admin_pin') ?? '3939';
+    String masterPin = prefs.getString('admin_pin') ?? '3939';
+    String pinAnn = prefs.getString('admin_pin_announcements') ?? '3901';
+    String pinMat = prefs.getString('admin_pin_materials') ?? '3902';
+    String pinQ = prefs.getString('admin_pin_questions') ?? '3903';
+    String pinSched = prefs.getString('admin_pin_schedule') ?? '3904';
+    String pinDev = prefs.getString('admin_pin_devices') ?? '3905';
 
     try {
-      final res = await Supabase.instance.client
+      final rows = await Supabase.instance.client
           .from('app_settings')
-          .select('value')
-          .eq('key', 'admin_pin')
-          .maybeSingle();
-      if (res != null && res['value'] != null) {
-        activePin = res['value'].toString();
-        await prefs.setString('admin_pin', activePin);
+          .select('key, value')
+          .inFilter('key', [
+            'admin_pin',
+            'admin_pin_announcements',
+            'admin_pin_materials',
+            'admin_pin_questions',
+            'admin_pin_schedule',
+            'admin_pin_devices',
+          ]);
+      for (final r in rows) {
+        final k = (r['key'] ?? '').toString();
+        final v = (r['value'] ?? '').toString().trim();
+        if (v.isEmpty) continue;
+        if (k == 'admin_pin') {
+          masterPin = v;
+          await prefs.setString('admin_pin', v);
+        } else if (k == 'admin_pin_announcements') {
+          pinAnn = v;
+          await prefs.setString('admin_pin_announcements', v);
+        } else if (k == 'admin_pin_materials') {
+          pinMat = v;
+          await prefs.setString('admin_pin_materials', v);
+        } else if (k == 'admin_pin_questions') {
+          pinQ = v;
+          await prefs.setString('admin_pin_questions', v);
+        } else if (k == 'admin_pin_schedule') {
+          pinSched = v;
+          await prefs.setString('admin_pin_schedule', v);
+        } else if (k == 'admin_pin_devices') {
+          pinDev = v;
+          await prefs.setString('admin_pin_devices', v);
+        }
       }
     } catch (_) {}
 
@@ -2941,6 +2978,54 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     final cardBg = Theme.of(context).cardColor;
     final accent = Theme.of(context).colorScheme.primary;
+
+    void handleVerifyPin(BuildContext dialogCtx) {
+      final entered = passCtrl.text.trim();
+      if (entered.isEmpty) return;
+
+      if (entered == masterPin) {
+        Navigator.pop(dialogCtx);
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AdminScreen(
+              adminName: _studentName,
+              allowedTabs: const [0, 1, 2, 3, 4],
+              isFullAccess: true,
+            ),
+          ),
+        );
+        return;
+      }
+
+      final List<int> matchedTabs = [];
+      if (entered == pinAnn) matchedTabs.add(0);
+      if (entered == pinMat) matchedTabs.add(1);
+      if (entered == pinQ) matchedTabs.add(2);
+      if (entered == pinSched) matchedTabs.add(3);
+      if (entered == pinDev) matchedTabs.add(4);
+
+      if (matchedTabs.isNotEmpty) {
+        Navigator.pop(dialogCtx);
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => AdminScreen(
+              adminName: _studentName,
+              allowedTabs: matchedTabs,
+              isFullAccess: false,
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(AppPrefs.tr('الرمز السري غير صحيح! الوصول مرفوض.', 'Invalid PIN! Access denied.')),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
 
     showDialog(
       context: context,
@@ -2950,7 +3035,13 @@ class _HomeScreenState extends State<HomeScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(AppPrefs.tr('أدخل الرمز السري المخصص لمندوبي الدفعة:', 'Enter admin PIN:'), style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            Text(
+              AppPrefs.tr(
+                'أدخل الرمز السري العام أو رمز الصلاحية المخصص لك:',
+                'Enter master or role-specific admin PIN:',
+              ),
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: passCtrl,
@@ -2959,6 +3050,7 @@ class _HomeScreenState extends State<HomeScreen> {
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 20, letterSpacing: 4),
               decoration: const InputDecoration(hintText: '••••', border: OutlineInputBorder()),
+              onSubmitted: (_) => handleVerifyPin(dialogCtx),
             ),
             const SizedBox(height: 10),
             TextButton.icon(
@@ -2972,7 +3064,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   Navigator.pop(dialogCtx);
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => AdminScreen(adminName: _studentName)),
+                    MaterialPageRoute(
+                      builder: (_) => AdminScreen(
+                        adminName: _studentName,
+                        allowedTabs: const [0, 1, 2, 3, 4],
+                        isFullAccess: true,
+                      ),
+                    ),
                   );
                 }
               },
@@ -2983,19 +3081,7 @@ class _HomeScreenState extends State<HomeScreen> {
           TextButton(onPressed: () => Navigator.pop(dialogCtx), child: Text(AppPrefs.tr('إلغاء', 'Cancel'))),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
-            onPressed: () {
-              if (passCtrl.text.trim() == activePin) {
-                Navigator.pop(dialogCtx);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => AdminScreen(adminName: _studentName)),
-                );
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(AppPrefs.tr('الرمز السري غير صحيح! الوصول مرفوض.', 'Invalid PIN! Access denied.')), backgroundColor: Colors.red),
-                );
-              }
-            },
+            onPressed: () => handleVerifyPin(dialogCtx),
             child: Text(AppPrefs.tr('دخول للوحة', 'Enter'), style: const TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
