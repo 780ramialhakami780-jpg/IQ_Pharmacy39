@@ -141,14 +141,33 @@ class _AdminScreenState extends State<AdminScreen> {
       return _client.storage.from(bucket).getPublicUrl(fileName);
     }
 
-    final storageBase = _client.storage.url; // e.g. https://xxx.supabase.co/storage/v1
-    final uploadUri = Uri.parse('$storageBase/object/$bucket/$fileName');
+    // استخراج رابط التخزين السليم دائماً سواء كانت _client.storage.url كاملة أو نسبية
+    final rawStorageUrl = _client.storage.url.trim();
+    final String endpointUrl = rawStorageUrl.startsWith('http')
+        ? (rawStorageUrl.endsWith('/')
+            ? '${rawStorageUrl}object/$bucket/$fileName'
+            : '$rawStorageUrl/object/$bucket/$fileName')
+        : 'https://stvavavzjrcxcivxykfv.supabase.co/storage/v1/object/$bucket/$fileName';
+
+    final uploadUri = Uri.parse(endpointUrl);
     final httpClient = HttpClient();
+    httpClient.connectionTimeout = const Duration(seconds: 25);
     try {
       final request = await httpClient.postUrl(uploadUri);
       _client.headers.forEach((key, value) {
-        request.headers.set(key, value);
+        if (value.isNotEmpty) {
+          request.headers.set(key, value);
+        }
       });
+      if (request.headers.value('apikey') == null) {
+        request.headers.set('apikey', 'sb_publishable_2D5B4SJgPAwqZqqgpiFaMA_HzTlka-k');
+      }
+      if (request.headers.value(HttpHeaders.authorizationHeader) == null) {
+        request.headers.set(
+          HttpHeaders.authorizationHeader,
+          'Bearer sb_publishable_2D5B4SJgPAwqZqqgpiFaMA_HzTlka-k',
+        );
+      }
       request.headers.set(HttpHeaders.contentTypeHeader, contentType);
       request.headers.set('x-upsert', 'true');
       request.contentLength = bytes.length;
@@ -162,7 +181,6 @@ class _AdminScreenState extends State<AdminScreen> {
         sent = end;
         if (mounted) {
           setState(() {
-            // نُبقي 95% لإرسال البيانات و 5% لتأكيد الخادم النهائي
             _uploadProgress = (sent / bytes.length) * 0.95;
           });
         }
@@ -176,6 +194,16 @@ class _AdminScreenState extends State<AdminScreen> {
       } else {
         throw Exception('Upload failed (${response.statusCode}): $respBody');
       }
+    } catch (_) {
+      // مسار احتياطي مباشر عبر SDK Supabase عند أي اختلاف في ترويسات الاتصال أو حجم الملف
+      if (mounted) setState(() => _uploadProgress = 0.65);
+      await _client.storage.from(bucket).uploadBinary(
+            fileName,
+            bytes,
+            fileOptions: FileOptions(contentType: contentType, upsert: true),
+          );
+      if (mounted) setState(() => _uploadProgress = 1.0);
+      return _client.storage.from(bucket).getPublicUrl(fileName);
     } finally {
       httpClient.close();
     }
@@ -1019,6 +1047,7 @@ class _AdminScreenState extends State<AdminScreen> {
                         _uploadingFileSizeBytes = bytes!.length;
                       });
 
+                      String lastErrDetail = '';
                       try {
                         String publicUrl = '';
                         try {
@@ -1028,7 +1057,8 @@ class _AdminScreenState extends State<AdminScreen> {
                             bytes: bytes,
                             contentType: _mimeTypeForExt(safeExt),
                           );
-                        } catch (_) {
+                        } catch (e1) {
+                          lastErrDetail = e1.toString();
                           publicUrl = await _uploadBytesWithRealProgress(
                             bucket: 'announcements',
                             fileName: fileName,
@@ -1055,7 +1085,9 @@ class _AdminScreenState extends State<AdminScreen> {
                         _showMsg('تم رفع الملف (${picked.name}) بنجاح ✓ اضغط الآن على حفظ الملف في المادة');
                       } catch (e) {
                         if (mounted) setState(() => _isUploadingFile = false);
-                        _showMsg('تعذر رفع الملف، تأكد من الاتصال بالإنترنت وتفعيل Storage', isError: true);
+                        final detail = lastErrDetail.isNotEmpty ? lastErrDetail : e.toString();
+                        final shortDetail = detail.length > 120 ? detail.substring(0, 120) : detail;
+                        _showMsg('تعذر رفع الملف ($shortDetail)', isError: true);
                       }
                     },
             ),
