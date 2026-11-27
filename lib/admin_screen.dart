@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'attendance_radar.dart';
 
 class AdminScreen extends StatefulWidget {
@@ -611,7 +612,80 @@ class _AdminScreenState extends State<AdminScreen> {
           const SizedBox(height: 10),
           TextField(controller: fileType, decoration: const InputDecoration(labelText: 'النوع (PDF / AUDIO / VIDEO)', border: OutlineInputBorder())),
           const SizedBox(height: 10),
-          TextField(controller: fileUrl, decoration: const InputDecoration(labelText: 'رابط الملف المباشر (Drive / Telegram / URL)', border: OutlineInputBorder())),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: fileUrl,
+                  decoration: const InputDecoration(
+                    labelText: 'رابط الملف المباشر أو ارفعه من هاتفك',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4FD1C5),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+                ),
+                icon: const Icon(Icons.upload_file_rounded),
+                label: const Text('رفع PDF', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: () async {
+                  final result = await FilePicker.platform.pickFiles(
+                    type: FileType.custom,
+                    allowedExtensions: ['pdf', 'mp3', 'm4a', 'mp4', 'doc', 'docx', 'ppt', 'pptx'],
+                    withData: true,
+                  );
+                  if (result == null || result.files.isEmpty) return;
+                  final picked = result.files.first;
+                  setState(() => _isLoading = true);
+                  try {
+                    Uint8List? bytes = picked.bytes;
+                    if (bytes == null && picked.path != null && !kIsWeb) {
+                      bytes = await File(picked.path!).readAsBytes();
+                    }
+                    if (bytes == null) {
+                      _showMsg('تعذر قراءة الملف من الهاتف', isError: true);
+                      return;
+                    }
+                    final ext = (picked.extension ?? 'pdf').toLowerCase();
+                    final fileName = 'mat_${DateTime.now().millisecondsSinceEpoch}.$ext';
+                    String publicUrl = '';
+                    try {
+                      await _client.storage.from('materials').uploadBinary(
+                            fileName,
+                            bytes,
+                            fileOptions: FileOptions(contentType: ext == 'pdf' ? 'application/pdf' : 'application/octet-stream'),
+                          );
+                      publicUrl = _client.storage.from('materials').getPublicUrl(fileName);
+                    } catch (_) {
+                      await _client.storage.from('announcements').uploadBinary(fileName, bytes);
+                      publicUrl = _client.storage.from('announcements').getPublicUrl(fileName);
+                    }
+                    fileUrl.text = publicUrl;
+                    if (fileTitle.text.trim().isEmpty) {
+                      final cleanTitle = picked.name.replaceAll(RegExp(r'\.[^.]+$'), '');
+                      fileTitle.text = cleanTitle;
+                    }
+                    if (ext == 'mp3' || ext == 'm4a') {
+                      fileType.text = 'AUDIO';
+                    } else if (ext == 'mp4') {
+                      fileType.text = 'VIDEO';
+                    } else {
+                      fileType.text = 'PDF';
+                    }
+                    _showMsg('تم رفع الملف (${picked.name}) بنجاح ✓ اضغط الآن على حفظ الملف في المادة');
+                  } catch (e) {
+                    _showMsg('تعذر رفع الملف، تأكد من الاتصال بالإنترنت وتفعيل Storage', isError: true);
+                  } finally {
+                    if (mounted) setState(() => _isLoading = false);
+                  }
+                },
+              ),
+            ],
+          ),
           const SizedBox(height: 10),
           ElevatedButton(
             onPressed: () async {
