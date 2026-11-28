@@ -171,7 +171,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
     return ['mp3', 'm4a', 'wav', 'ogg', 'aac', 'mp4', 'mkv', 'mov', 'avi', 'webm'].contains(ext);
   }
 
-  /// تنزيل الملف وحفظه محلياً في ذاكرة التطبيق للعمل بدون إنترنت
   Future<String?> _downloadToLocalCache(Map<String, dynamic> mat) async {
     if (kIsWeb) return null;
     final matKey = (mat['id'] ?? mat['title']).toString();
@@ -242,7 +241,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
     }
   }
 
-  /// فتح أي مستند أو ملف داخل عارض المستندات المدمج (شبيه WPS Office) مع دعم الأوفلاين
   Future<void> _openMaterialFile(Map<String, dynamic> mat, {bool forceExternal = false}) async {
     final url = (mat['file_url'] ?? '').toString().trim();
     if (url.isEmpty) {
@@ -275,12 +273,10 @@ class _SubjectScreenState extends State<SubjectScreen> {
       return;
     }
 
-    // تنزيل الملف محلياً أولاً (أو جلبه فوراً من الكاش إذا كان محفوظاً مسبقاً)
     final savedPath = await _downloadToLocalCache(mat);
 
     if (!mounted) return;
 
-    // 1. إذا كان صورة: افتح عارض الصور المدمج بالتكبير والمشاركة
     if (_isImageFile(mat)) {
       Navigator.push(
         context,
@@ -306,7 +302,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
       return;
     }
 
-    // 2. إذا كان ملف صوتي أو فيديو: افتحه في مشغل الهاتف أو المتصفح
     if (_isMediaFile(mat)) {
       if (savedPath != null && File(savedPath).existsSync()) {
         AppLockGuard.isPickingExternalFile = true;
@@ -324,7 +319,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
       return;
     }
 
-    // 3. جميع المستندات (PDF, DOCX, XLSX, PPTX, TXT, CSV, وغيرها): افتحها في عارض المستندات المدمج شبيه WPS Office
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -800,11 +794,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
   }
 }
 
-/// ============================================================================
-/// عارض المستندات المتكامل شبيه تطبيق WPS Office
-/// يدعم: DOCX, PPTX, XLSX, CSV, PDF, TXT, XML, HTML داخل التطبيق مع أوضاع القراءة
-/// والتكبير والبحث والمشاركة والفتح في التطبيقات الخارجية
-/// ============================================================================
 class WpsStyleDocumentViewerScreen extends StatefulWidget {
   final String title;
   final String extension;
@@ -827,18 +816,19 @@ class WpsStyleDocumentViewerScreen extends StatefulWidget {
 
 class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScreen> {
   bool _parsing = true;
-  String _readingMode = 'paper'; // 'paper' | 'sepia' | 'night'
+  String _readingMode = 'paper';
   double _fontSize = 15.5;
   bool _showSearchBar = false;
   String _docSearchQuery = '';
   final TextEditingController _searchCtrl = TextEditingController();
+  final TransformationController _zoomController = TransformationController();
 
-  // محتوى المستند المستخرج
   List<String> _paragraphs = [];
   List<List<String>> _sheetRows = [];
-  List<Map<String, dynamic>> _slides = [];
+  List> _slides = [];
+  List> _pdfPages = [];
   String _fileSizeLabel = '';
-  String _docCategory = 'DOC'; // 'DOCX' | 'PPTX' | 'XLSX' | 'PDF' | 'TEXT'
+  String _docCategory = 'DOC';
 
   @override
   void initState() {
@@ -849,6 +839,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _zoomController.dispose();
     super.dispose();
   }
 
@@ -948,7 +939,10 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
             .toList();
       } else if (ext == 'pdf') {
         _docCategory = 'PDF';
-        _paragraphs = _extractPdfReadableText(bytes);
+        _pdfPages = _parsePdfPages(bytes);
+        _paragraphs = _pdfPages
+            .expand((p) => (p['lines'] as List<String>))
+            .toList();
       } else {
         _docCategory = 'TEXT';
         final rawText = utf8.decode(bytes, allowMalformed: true);
@@ -1039,12 +1033,12 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
     return rows;
   }
 
-  /// استخراج النصوص من ملفات PDF المضغوطة (FlateDecode) لعرضها فوراً داخل التطبيق
-  List<String> _extractPdfReadableText(Uint8List bytes) {
-    final List<String> extracted = [];
+  List> _parsePdfPages(Uint8List bytes) {
+    final List> pages = [];
     final rawLatin = latin1.decode(bytes, allowInvalid: true);
     final streamMatches = RegExp(r'stream\r?\n(.*?)\r?\nendstream', dotAll: true).allMatches(rawLatin);
 
+    int pageCounter = 1;
     for (final sm in streamMatches) {
       final streamStr = sm.group(1);
       if (streamStr == null || streamStr.isEmpty) continue;
@@ -1057,20 +1051,43 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
         decodedChunk = streamStr;
       }
 
-      final tjMatches = RegExp(r'\(([^()\\]{2,})\)\s*Tj').allMatches(decodedChunk);
-      final buf = StringBuffer();
-      for (final m in tjMatches) {
-        final txt = (m.group(1) ?? '').trim();
-        if (txt.isNotEmpty) {
-          buf.write('$txt ');
-        }
+      final List<String> pageLines = [];
+      for (final m in RegExp(r'\(([^()\\]{1,})\)\s*Tj').allMatches(decodedChunk)) {
+        final txt = _decodeXmlEntities((m.group(1) ?? '').trim());
+        if (txt.isNotEmpty) pageLines.add(txt);
       }
-      final line = buf.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
-      if (line.length > 3) {
-        extracted.add(line);
+      for (final m in RegExp(r'\[(.*?)\]\s*TJ', dotAll: true).allMatches(decodedChunk)) {
+        final arr = m.group(1) ?? '';
+        final buf = StringBuffer();
+        for (final tm in RegExp(r'\(([^()\\]*)\)').allMatches(arr)) {
+          buf.write(_decodeXmlEntities(tm.group(1) ?? ''));
+        }
+        final joined = buf.toString().trim();
+        if (joined.isNotEmpty) pageLines.add(joined);
+      }
+
+      final merged = pageLines.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (merged.length > 2) {
+        final splitLines = merged
+            .split(RegExp(r'(?<=[.!?؟])\s+'))
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+        pages.add({
+          'page': pageCounter++,
+          'lines': splitLines.isNotEmpty ? splitLines : [merged],
+        });
       }
     }
-    return extracted;
+
+    if (pages.isEmpty) {
+      pages.add({
+        'page': 1,
+        'lines': <String>[],
+        'isScannedOrImage': true,
+      });
+    }
+    return pages;
   }
 
   Future<void> _openInDeviceWpsOrPdfApp() async {
@@ -1174,6 +1191,11 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
         ),
         actions: [
           IconButton(
+            tooltip: 'إعادة ضبط التكبير',
+            icon: const Icon(Icons.zoom_out_map_rounded),
+            onPressed: () => _zoomController.value = Matrix4.identity(),
+          ),
+          IconButton(
             tooltip: 'بحث داخل المستند',
             icon: Icon(_showSearchBar ? Icons.search_off_rounded : Icons.search_rounded),
             onPressed: () {
@@ -1230,10 +1252,16 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
                       ],
                     ),
                   )
-                : _buildDocumentBody(headerBg),
+                : InteractiveViewer(
+                    transformationController: _zoomController,
+                    minScale: 0.8,
+                    maxScale: 4.5,
+                    panEnabled: true,
+                    scaleEnabled: true,
+                    child: _buildDocumentBody(headerBg),
+                  ),
           ),
 
-          // شريط أدوات القراءة السفلي (شبيه WPS Office: حجم الخط، وضع القراءة، نسخ، فتح)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
@@ -1306,7 +1334,117 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
   }
 
   Widget _buildDocumentBody(Color headerBg) {
-    // 1. عرض الشرائح التقديمية (PPTX) كبطاقات شرائح مرتبة
+    if (_docCategory == 'PDF') {
+      final filteredPages = _docSearchQuery.isEmpty
+          ? _pdfPages
+          : _pdfPages.where((pg) {
+              final lines = (pg['lines'] as List<String>).join(' ').toLowerCase();
+              return lines.contains(_docSearchQuery);
+            }).toList();
+
+      return ListView(
+        padding: const EdgeInsets.all(14),
+        children: [
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _pageBackgroundColor,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: headerBg.withOpacity(0.35)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: headerBg, foregroundColor: Colors.white),
+                    icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
+                    label: const Text('الفتح الكامل (أوفلاين)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    onPressed: _openInDeviceWpsOrPdfApp,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.cloud_done_rounded, size: 17),
+                  label: const Text('عارض سحابي', style: TextStyle(fontSize: 12)),
+                  onPressed: _openInOnlineOfficeViewer,
+                ),
+              ],
+            ),
+          ),
+          ...filteredPages.map((pg) {
+            final pageNum = pg['page'] ?? 1;
+            final lines = (pg['lines'] as List<String>);
+            final isScanned = pg['isScannedOrImage'] == true || lines.isEmpty;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 14),
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: _pageBackgroundColor,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 8, offset: const Offset(0, 2))],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        decoration: BoxDecoration(color: headerBg, borderRadius: BorderRadius.circular(6)),
+                        child: Text(
+                          'صفحة PDF رقم $pageNum',
+                          style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      if (!isScanned)
+                        IconButton(
+                          tooltip: 'نسخ نص الصفحة',
+                          icon: Icon(Icons.copy_rounded, color: headerBg, size: 18),
+                          onPressed: () {
+                            Clipboard.setData(ClipboardData(text: lines.join('\n')));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('تم نسخ نص الصفحة $pageNum ✓'), backgroundColor: Colors.teal),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (isScanned)
+                    Column(
+                      children: [
+                        Icon(Icons.picture_as_pdf_rounded, size: 42, color: headerBg),
+                        const SizedBox(height: 8),
+                        Text(
+                          'هذه الصفحة مصوّرة بالكامل داخل ملف PDF.\nاضغط على "الفتح الكامل (أوفلاين)" أو "عارض سحابي" بالأعلى لعرضها بدقتها الكاملة.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: _pageTextColor, fontSize: _fontSize - 1, height: 1.55),
+                        ),
+                      ],
+                    )
+                  else
+                    ...lines.map((line) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: SelectableText(
+                            line,
+                            style: TextStyle(
+                              fontSize: _fontSize,
+                              color: _pageTextColor,
+                              height: 1.65,
+                            ),
+                          ),
+                        )),
+                ],
+              ),
+            );
+          }),
+        ],
+      );
+    }
+
     if (_docCategory == 'PPTX' && _slides.isNotEmpty) {
       final filteredSlides = _docSearchQuery.isEmpty
           ? _slides
@@ -1361,7 +1499,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
       );
     }
 
-    // 2. عرض الجداول الحسابية (XLSX / CSV) كجدول خلايا تفاعلي
     if (_docCategory == 'XLSX' && _sheetRows.isNotEmpty) {
       final filteredRows = _docSearchQuery.isEmpty
           ? _sheetRows
@@ -1406,7 +1543,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
       );
     }
 
-    // 3. عرض مستندات Word (DOCX) والنصوص وملفات PDF كصفحة وثيقة احترافية
     final visibleParagraphs = _docSearchQuery.isEmpty
         ? _paragraphs
         : _paragraphs.where((p) => p.toLowerCase().contains(_docSearchQuery)).toList();
@@ -1414,45 +1550,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
     return ListView(
       padding: const EdgeInsets.all(14),
       children: [
-        if (_docCategory == 'PDF')
-          Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: headerBg.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: headerBg.withOpacity(0.5)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '📄 خيارات عرض ملف PDF الكامل (بالتنسيق والصور والرسوم):',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: _pageTextColor),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(backgroundColor: headerBg, foregroundColor: Colors.white),
-                        icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
-                        label: const Text('فتح بالعارض الكامل (أوفلاين)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                        onPressed: _openInDeviceWpsOrPdfApp,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.cloud_done_rounded, size: 17),
-                      label: const Text('عارض سحابي', style: TextStyle(fontSize: 12)),
-                      onPressed: _openInOnlineOfficeViewer,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -1466,7 +1563,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
                     Icon(Icons.description_outlined, size: 48, color: headerBg),
                     const SizedBox(height: 10),
                     Text(
-                      'هذا المستند يحتوي على صفحات مصوّرة أو مخططات.\nاضغط على زر "فتح بالعارض الكامل" بالأعلى لعرض جميع الصفحات بدقتها الأصلية.',
+                      'هذا المستند يحتوي على صفحات مصوّرة أو مخططات.\nاضغط على زر الفتح بالأعلى لعرض جميع الصفحات بدقتها الأصلية.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: _pageTextColor, fontSize: 14, height: 1.6),
                     ),
@@ -1478,9 +1575,11 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          widget.title,
-                          style: TextStyle(fontSize: _fontSize + 2, fontWeight: FontWeight.bold, color: headerBg),
+                        Expanded(
+                          child: Text(
+                            widget.title,
+                            style: TextStyle(fontSize: _fontSize + 2, fontWeight: FontWeight.bold, color: headerBg),
+                          ),
                         ),
                         IconButton(
                           tooltip: 'نسخ كامل النص',
@@ -1514,7 +1613,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
   }
 }
 
-/// قارئ ملفات ZIP نقي بلغة Dart لاستخراج محتويات DOCX / PPTX / XLSX بدون أي مكتبات إضافية
 class _PureDartZipReader {
   static int _u16(Uint8List b, int o) => b[o] | (b[o + 1] << 8);
   static int _u32(Uint8List b, int o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24);
@@ -1606,7 +1704,7 @@ class _InAppImageViewerScreen extends StatelessWidget {
       body: Center(
         child: InteractiveViewer(
           minScale: 0.5,
-          maxScale: 4.0,
+          maxScale: 4.5,
           child: hasLocal
               ? Image.file(File(localFilePath!), fit: BoxFit.contain)
               : Image.network(
