@@ -36,6 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   int _currentIndex = 0;
   String _studentName = '';
+  String _studentNameEn = '';
   String _studentId = '';
   String _studentGender = 'male'; // 'male' or 'female'
   String _universityEmail = '';
@@ -66,9 +67,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool get _isFemale => _studentGender == 'female';
 
+  String get _displayFullName {
+    if (!AppPrefs.isEnglish) return _studentName;
+    if (_studentNameEn.trim().isNotEmpty) return _studentNameEn.trim();
+    return AppLocalizer.localizePersonName(_studentName);
+  }
+
   String get _firstName {
-    final parts = _studentName.trim().split(RegExp(r'\s+'));
-    return parts.isNotEmpty && parts.first.isNotEmpty ? parts.first : (_isFemale ? 'طالبة' : 'طالب');
+    final source = _displayFullName.trim();
+    final parts = source.split(RegExp(r'\s+'));
+    if (parts.isNotEmpty && parts.first.isNotEmpty) {
+      return parts.first;
+    }
+    return AppPrefs.isEnglish ? 'Student' : (_isFemale ? 'طالبة' : 'طالب');
   }
 
   @override
@@ -153,6 +164,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {
       _studentName = prefs.getString('full_name') ?? 'طالب صيدلة';
+      _studentNameEn = prefs.getString('full_name_en') ?? '';
       _studentId = prefs.getString('student_id') ?? '';
       _studentGender = prefs.getString('student_gender') ?? 'male';
       _universityEmail = prefs.getString('university_email') ?? '';
@@ -243,6 +255,18 @@ class _HomeScreenState extends State<HomeScreen> {
       String cloudAvatar = _profileAvatarUrl;
       List<dynamic> attendanceData = _myAttendance;
       if (_studentId.isNotEmpty) {
+        try {
+          final meEn = await client
+              .from('students')
+              .select('full_name_en')
+              .eq('student_id', _studentId)
+              .maybeSingle();
+          if (meEn != null && meEn['full_name_en'] != null && meEn['full_name_en'].toString().trim().isNotEmpty) {
+            _studentNameEn = meEn['full_name_en'].toString().trim();
+            await prefs.setString('full_name_en', _studentNameEn);
+          }
+        } catch (_) {}
+
         try {
           final me = await client
               .from('students')
@@ -656,7 +680,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _studentName,
+                              _displayFullName,
                               style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, height: 1.3),
                             ),
                             const SizedBox(height: 4),
@@ -1237,7 +1261,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          subj['name'] ?? '',
+                          AppLocalizer.localizeSubjectName(subj),
                           maxLines: 2,
                           textAlign: TextAlign.center,
                           overflow: TextOverflow.ellipsis,
@@ -1269,8 +1293,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     decoration: BoxDecoration(color: subjColor.withOpacity(0.18), borderRadius: BorderRadius.circular(12)),
                     child: Icon(Icons.menu_book_rounded, color: subjColor),
                   ),
-                  title: Text(subj['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  subtitle: Text(subj['subtitle'] ?? AppPrefs.tr('اضغط لفتح المادة والملفات', 'Tap to open subject files'), style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                  title: Text(AppLocalizer.localizeSubjectName(subj), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  subtitle: Text(AppLocalizer.localizeSubjectSubtitle(subj), style: const TextStyle(color: Colors.grey, fontSize: 12)),
                   trailing: const Icon(Icons.chevron_right_rounded, color: Colors.grey),
                   onTap: () {
                     Navigator.push(
@@ -2298,7 +2322,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(_studentName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                                    Text(_displayFullName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                                     Text('${AppPrefs.tr('رقم القيد:', 'Student ID:')} $_studentId', style: const TextStyle(fontSize: 12, color: Colors.grey)),
                                   ],
                                 ),
@@ -2601,7 +2625,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
-                                    subj['name'] ?? '',
+                                    AppLocalizer.localizeSubjectName(subj),
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                                   ),
                                 ),
@@ -3594,7 +3618,7 @@ class _ExamNightReviewScreenState extends State<ExamNightReviewScreen> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                         child: ExpansionTile(
                           leading: Icon(Icons.menu_book_rounded, color: accent),
-                          title: Text(subj['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                          title: Text(AppLocalizer.localizeSubjectName(subj), style: const TextStyle(fontWeight: FontWeight.bold)),
                           subtitle: Text(
                             subjRefs.isEmpty
                                 ? AppPrefs.tr('لا توجد بطاقات مرجعية مضافة بعد', 'No reference cards yet')
@@ -3972,7 +3996,8 @@ class AppGlobalSearchDelegate extends SearchDelegate {
 
     // 2. المواد الدراسية
     final matchedSubjects = subjects.where((s) {
-      final hay = '${s['name'] ?? ''} ${s['subtitle'] ?? ''}'.toLowerCase();
+      final locName = AppLocalizer.localizeSubjectName(s);
+      final hay = '${s['name'] ?? ''} $locName ${s['subtitle'] ?? ''}'.toLowerCase();
       return hay.contains(cleanQ);
     }).toList();
 
@@ -3982,8 +4007,8 @@ class AppGlobalSearchDelegate extends SearchDelegate {
         final col = _parseColor(s['color_hex']?.toString());
         results.add(ListTile(
           leading: CircleAvatar(backgroundColor: col.withOpacity(0.2), child: Icon(Icons.menu_book_rounded, color: col)),
-          title: Text(s['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: Text((s['subtitle'] ?? '').toString().isNotEmpty ? s['subtitle'] : AppPrefs.tr('فتح المادة والملفات وبنك الأسئلة', 'Open subject')),
+          title: Text(AppLocalizer.localizeSubjectName(s), style: const TextStyle(fontWeight: FontWeight.bold)),
+          subtitle: Text(AppLocalizer.localizeSubjectSubtitle(s)),
           trailing: const Icon(Icons.chevron_right_rounded),
           onTap: () {
             close(context, null);
@@ -5330,5 +5355,338 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
         ],
       ),
     );
+  }
+}
+
+
+/// ============================================================================
+/// محوّل الأسماء والمواد التلقائي بين العربية والإنجليزية
+/// يحوّل أسماء المقررات الدراسية وأسماء الطلاب تلقائياً عند تفعيل اللغة الإنجليزية
+/// ============================================================================
+class AppLocalizer {
+  static const Map<String, String> _subjectTranslations = {
+    'الفيزياء الصيدلانية': 'Physical Pharmacy',
+    'صيدلة فيزيائية': 'Physical Pharmacy',
+    'التشريح وعلم الأنسجة': 'Anatomy & Histology',
+    'التشريح والأنسجة': 'Anatomy & Histology',
+    'تشريح وأنسجة': 'Anatomy & Histology',
+    'مهارات الحاسوب': 'Computer Skills',
+    'مهارات حاسوب': 'Computer Skills',
+    'الحسابات الصيدلانية': 'Pharmaceutical Calculations',
+    'حسابات صيدلانية': 'Pharmaceutical Calculations',
+    'العربية': 'Arabic Language',
+    'اللغة العربية': 'Arabic Language',
+    'اللغة العربية 2': 'Arabic Language II',
+    'الإنجليزية': 'English Language',
+    'اللغة الإنجليزية': 'English Language',
+    'اللغة الإنجليزية 2': 'English Language II',
+    'الكيمياء الصيدلانية': 'Pharmaceutical Chemistry',
+    'الكيمياء العضوية': 'Organic Chemistry',
+    'الكيمياء التحليلية': 'Analytical Chemistry',
+    'الكيمياء الحيوية': 'Biochemistry',
+    'علم الأدوية': 'Pharmacology',
+    'العقاقير': 'Pharmacognosy',
+    'الصيدلانيات': 'Pharmaceutics',
+    'الأحياء الدقيقة': 'Microbiology',
+    'علم وظائف الأعضاء': 'Physiology',
+  };
+
+  static const Map<String, String> _subtitleTranslations = {
+    'ابدأ الآن': 'Start Now',
+    'اضغط لفتح المادة والملفات': 'Tap to open subject files',
+    'المقررات والمحاضرات': 'Lectures & Materials',
+  };
+
+  static const Map<String, String> _commonNamesMap = {
+    'رامي': 'Rami',
+    'محمد': 'Mohammed',
+    'أحمد': 'Ahmed',
+    'احمد': 'Ahmed',
+    'علي': 'Ali',
+    'عمر': 'Omar',
+    'خالد': 'Khaled',
+    'صالح': 'Saleh',
+    'يحيى': 'Yahya',
+    'حسين': 'Hussein',
+    'حسن': 'Hassan',
+    'إبراهيم': 'Ibrahim',
+    'ابراهيم': 'Ibrahim',
+    'إسماعيل': 'Ismail',
+    'اسماعيل': 'Ismail',
+    'يوسف': 'Yousef',
+    'يونس': 'Younes',
+    'زكريا': 'Zakaria',
+    'طارق': 'Tariq',
+    'ياسر': 'Yasser',
+    'بلال': 'Bilal',
+    'حمزة': 'Hamza',
+    'أسامة': 'Osama',
+    'اسامة': 'Osama',
+    'أيمن': 'Ayman',
+    'ايمن': 'Ayman',
+    'ماجد': 'Majed',
+    'عادل': 'Adel',
+    'فهد': 'Fahad',
+    'نايف': 'Naif',
+    'نبيل': 'Nabil',
+    'وليد': 'Waleed',
+    'سامي': 'Sami',
+    'هاني': 'Hani',
+    'مازن': 'Mazen',
+    'عماد': 'Emad',
+    'عصام': 'Essam',
+    'جمال': 'Jamal',
+    'كمال': 'Kamal',
+    'بشير': 'Basheer',
+    'منير': 'Muneer',
+    'أمين': 'Ameen',
+    'امين': 'Ameen',
+    'أنس': 'Anas',
+    'انس': 'Anas',
+    'عمار': 'Ammar',
+    'حذيفة': 'Huzaifa',
+    'معاذ': 'Muath',
+    'صهيب': 'Suhaib',
+    'عبدالله': 'Abdullah',
+    'عبدالرحمن': 'Abdulrahman',
+    'عبدالعزيز': 'Abdulaziz',
+    'عبدالكريم': 'Abdulkarim',
+    'عبدالملك': 'Abdulmalik',
+    'عبدالمجيد': 'Abdulmajeed',
+    'عبدالسلام': 'Abdulsalam',
+    'عبداللطيف': 'Abdullatif',
+    'عبدالوهاب': 'Abdulwahab',
+    'عبدالرزاق': 'Abdulrazzaq',
+    'عبدالفتاح': 'Abdulfattah',
+    'عبدالرحيم': 'Abdulraheem',
+    'فاطمة': 'Fatima',
+    'عائشة': 'Aisha',
+    'مريم': 'Maryam',
+    'سارة': 'Sarah',
+    'زينب': 'Zainab',
+    'خديجة': 'Khadijah',
+    'نور': 'Noor',
+    'هدى': 'Huda',
+    'أمل': 'Amal',
+    'امل': 'Amal',
+    'سلمى': 'Salma',
+    'ريم': 'Reem',
+    'روان': 'Rawan',
+    'آلاء': 'Alaa',
+    'الاء': 'Alaa',
+    'دعاء': 'Duaa',
+    'أسماء': 'Asmaa',
+    'اسماء': 'Asmaa',
+    'شيماء': 'Shaimaa',
+    'سمية': 'Sumaya',
+    'هاجر': 'Hajar',
+    'بلقيس': 'Balqees',
+    'أروى': 'Arwa',
+    'اروى': 'Arwa',
+    'رغد': 'Raghad',
+    'شهد': 'Shahd',
+    'ملاك': 'Malak',
+    'حنين': 'Haneen',
+    'إيمان': 'Eman',
+    'ايمان': 'Eman',
+    'بشرى': 'Bushra',
+    'صفاء': 'Safaa',
+    'وفاء': 'Wafaa',
+    'ندى': 'Nada',
+    'نهى': 'Nuha',
+    'سحر': 'Sahar',
+    'عبير': 'Abeer',
+    'غادة': 'Ghada',
+    'هبة': 'Heba',
+    'الحاكمي': 'Al-Hakami',
+    'الشريف': 'Al-Sharif',
+    'الحداد': 'Al-Haddad',
+    'السقاف': 'Al-Saqqaf',
+    'العمري': 'Al-Amri',
+    'المقطري': 'Al-Maqtari',
+    'الوصابي': 'Al-Wasabi',
+    'الذماري': 'Al-Dhamari',
+    'التعزي': 'Al-Taizi',
+    'الصنعاني': 'Al-Sanaani',
+    'الإرياني': 'Al-Eryani',
+    'المتوكل': 'Al-Mutawakel',
+    'الشامي': 'Al-Shami',
+    'الحوثي': 'Al-Houthi',
+    'الزبيري': 'Al-Zubairi',
+    'الأهدل': 'Al-Ahdal',
+    'العولقي': 'Al-Awlaqi',
+    'اليافعي': 'Al-Yafei',
+    'الكبسي': 'Al-Kibsi',
+    'الشرعبي': 'Al-Sharabi',
+    'الحمادي': 'Al-Hammadi',
+    'النعمان': 'Al-Noman',
+    'العنسي': 'Al-Ansi',
+    'المهدي': 'Al-Mahdi',
+    'الهاشمي': 'Al-Hashimi',
+    'القباطي': 'Al-Qubati',
+    'المخلافي': 'Al-Mikhlafi',
+    'الجبلي': 'Al-Jabali',
+    'الخولاني': 'Al-Khawlani',
+    'الحرازي': 'Al-Harazi',
+    'الآنسي': 'Al-Ansi',
+    'البيحاني': 'Al-Beihani',
+    'المليكي': 'Al-Mulaiki',
+    'الشهاري': 'Al-Shahari',
+    'العريقي': 'Al-Ariqi',
+    'الضالعي': 'Al-Dhalei',
+    'الحبيشي': 'Al-Hubaishi',
+    'السياغي': 'Al-Sayaghi',
+    'المروني': 'Al-Marwani',
+    'الغيثي': 'Al-Ghaithi',
+    'القدسي': 'Al-Qudsi',
+    'العديني': 'Al-Udaini',
+    'الصبري': 'Al-Sabri',
+    'المسوري': 'Al-Maswari',
+    'البعداني': 'Al-Baadani',
+    'الرياشي': 'Al-Riyashi',
+    'الأصبحي': 'Al-Asbahi',
+  };
+
+  static String localizeSubjectName(dynamic subj) {
+    if (subj is! Map) return '';
+    final arName = (subj['name'] ?? '').toString().trim();
+    if (!AppPrefs.isEnglish) return arName;
+
+    final explicitEn = (subj['name_en'] ?? '').toString().trim();
+    if (explicitEn.isNotEmpty) return explicitEn;
+
+    if (_subjectTranslations.containsKey(arName)) {
+      return _subjectTranslations[arName]!;
+    }
+    for (final entry in _subjectTranslations.entries) {
+      if (arName.contains(entry.key)) {
+        return entry.value;
+      }
+    }
+    return arName;
+  }
+
+  static String localizeSubjectSubtitle(dynamic subj) {
+    if (subj is! Map) {
+      return AppPrefs.tr('اضغط لفتح المادة والملفات', 'Tap to open subject files');
+    }
+    final rawSub = (subj['subtitle'] ?? '').toString().trim();
+    if (!AppPrefs.isEnglish) {
+      return rawSub.isNotEmpty ? rawSub : 'اضغط لفتح المادة والملفات';
+    }
+    final explicitEn = (subj['subtitle_en'] ?? '').toString().trim();
+    if (explicitEn.isNotEmpty) return explicitEn;
+    if (rawSub.isEmpty) return 'Tap to open subject files';
+    if (_subtitleTranslations.containsKey(rawSub)) {
+      return _subtitleTranslations[rawSub]!;
+    }
+    if (rawSub.startsWith('د.') || rawSub.startsWith('د/')) {
+      return 'Dr. ${localizePersonName(rawSub.substring(2).trim())}';
+    }
+    return localizePersonName(rawSub);
+  }
+
+  static String localizePersonName(String rawName) {
+    final clean = rawName.trim();
+    if (clean.isEmpty || !AppPrefs.isEnglish) return clean;
+    // إذا كان الاسم مكتوباً بالإنجليزية أصلاً نعيده كما هو
+    if (!RegExp(r'[\u0600-\u06FF]').hasMatch(clean)) return clean;
+
+    final words = clean.split(RegExp(r'\s+'));
+    final translatedWords = <String>[];
+
+    for (int i = 0; i < words.length; i++) {
+      final w = words[i];
+      if (w == 'بن' || w == 'ابن') {
+        translatedWords.add('Bin');
+        continue;
+      }
+      if (w == 'عبد' && i + 1 < words.length) {
+        final combined = 'عبد${words[i + 1]}';
+        if (_commonNamesMap.containsKey(combined)) {
+          translatedWords.add(_commonNamesMap[combined]!);
+          i++;
+          continue;
+        }
+      }
+      if (_commonNamesMap.containsKey(w)) {
+        translatedWords.add(_commonNamesMap[w]!);
+      } else {
+        translatedWords.add(_transliterateWord(w));
+      }
+    }
+    return translatedWords.join(' ');
+  }
+
+  static String _transliterateWord(String word) {
+    String w = word.replaceAll(RegExp(r'[\u064B-\u065F\u0670]'), ''); // إزالة التشكيل
+    bool hasAlPrefix = false;
+    if (w.startsWith('ال') && w.length > 3) {
+      hasAlPrefix = true;
+      w = w.substring(2);
+    }
+
+    const charMap = {
+      'أ': 'a',
+      'إ': 'i',
+      'آ': 'a',
+      'ا': 'a',
+      'ى': 'a',
+      'ب': 'b',
+      'ت': 't',
+      'ث': 'th',
+      'ج': 'j',
+      'ح': 'h',
+      'خ': 'kh',
+      'د': 'd',
+      'ذ': 'dh',
+      'ر': 'r',
+      'ز': 'z',
+      'س': 's',
+      'ش': 'sh',
+      'ص': 's',
+      'ض': 'd',
+      'ط': 't',
+      'ظ': 'z',
+      'ع': 'a',
+      'غ': 'gh',
+      'ف': 'f',
+      'ق': 'q',
+      'ك': 'k',
+      'ل': 'l',
+      'م': 'm',
+      'ن': 'n',
+      'ه': 'h',
+      'ة': 'a',
+      'و': 'o',
+      'ؤ': 'o',
+      'ي': 'i',
+      'ئ': 'e',
+      'ء': '',
+    };
+
+    final buf = StringBuffer();
+    for (int i = 0; i < w.length; i++) {
+      final ch = w[i];
+      if (i == 0 && (ch == 'ا' || ch == 'أ')) {
+        buf.write('a');
+        continue;
+      }
+      if (ch == 'ي' && i == 0) {
+        buf.write('y');
+        continue;
+      }
+      if (ch == 'و' && i == 0) {
+        buf.write('w');
+        continue;
+      }
+      buf.write(charMap[ch] ?? ch);
+    }
+
+    String res = buf.toString().replaceAll(RegExp(r'a{2,}'), 'a');
+    if (res.isNotEmpty) {
+      res = res[0].toUpperCase() + res.substring(1);
+    }
+    return hasAlPrefix ? 'Al-$res' : res;
   }
 }

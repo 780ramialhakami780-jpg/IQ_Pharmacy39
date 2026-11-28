@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'app_prefs.dart';
 import 'main.dart';
+import 'home_screen.dart';
 
 class SubjectScreen extends StatefulWidget {
   final Map<String, dynamic> subject;
@@ -44,7 +45,7 @@ class _SubjectScreenState extends State<SubjectScreen> {
   bool _quizSubmitted = false;
 
   dynamic get _subjectId => widget.subject['id'];
-  String get _subjectName => (widget.subject['name'] ?? '').toString();
+  String get _subjectName => AppLocalizer.localizeSubjectName(widget.subject);
 
   @override
   void initState() {
