@@ -203,6 +203,18 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
+  bool _isCurrentVersionBelow(String currentVer, String minVer) {
+    final p1 = currentVer.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final p2 = minVer.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    for (int i = 0; i < 3; i++) {
+      final a = i < p1.length ? p1[i] : 0;
+      final b = i < p2.length ? p2[i] : 0;
+      if (a < b) return true;
+      if (a > b) return false;
+    }
+    return false;
+  }
+
   Future<void> _syncWithCloud({bool silent = false}) async {
     if (_isSyncing) return;
     setState(() => _isSyncing = true);
@@ -357,6 +369,28 @@ class _HomeScreenState extends State<HomeScreen> {
         _announcements = filteredAnnouncements;
         _subjectReferences = refsData;
       });
+
+      try {
+        final minRow = await client
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'min_version')
+            .maybeSingle();
+        final serverMin = (minRow?['value'] ?? '').toString().trim();
+        if (serverMin.isNotEmpty && _isCurrentVersionBelow(currentAppVersion, serverMin) && mounted) {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const SoftwareUpdateScreen(
+                currentVersion: currentAppVersion,
+                forceBlockingMode: true,
+              ),
+            ),
+            (route) => false,
+          );
+          return;
+        }
+      } catch (_) {}
 
       if (!silent && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3116,10 +3150,265 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class SoftwareUpdateScreen extends StatefulWidget {
   final String currentVersion;
-  const SoftwareUpdateScreen({super.key, required this.currentVersion});
+  final bool forceBlockingMode;
+  const SoftwareUpdateScreen({
+    super.key,
+    required this.currentVersion,
+    this.forceBlockingMode = false,
+  });
 
   @override
   State<SoftwareUpdateScreen> createState() => _SoftwareUpdateScreenState();
+}
+
+class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
+  bool _checking = false;
+  bool _autoWifi = true;
+  String _lastChecked = '';
+  String _latestVersion = '';
+  String _minVersion = '1.0.0';
+  String _updateUrl = '';
+  String _updateNotes = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _latestVersion = widget.currentVersion;
+    _loadPrefsAndCheck();
+  }
+
+  Future<void> _loadPrefsAndCheck() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _autoWifi = prefs.getBool('update_auto_wifi') ?? true;
+      _lastChecked = prefs.getString('update_last_checked') ?? '';
+    });
+    await _checkForUpdate();
+  }
+
+  int _compareVersions(String v1, String v2) {
+    final p1 = v1.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final p2 = v2.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    for (int i = 0; i < 3; i++) {
+      final a = i < p1.length ? p1[i] : 0;
+      final b = i < p2.length ? p2[i] : 0;
+      if (a > b) return 1;
+      if (a < b) return -1;
+    }
+    return 0;
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    try {
+      final rows = await Supabase.instance.client
+          .from('app_settings')
+          .select('key, value')
+          .inFilter('key', ['latest_version', 'min_version', 'update_url', 'update_notes']);
+
+      String latest = widget.currentVersion;
+      String minVer = '1.0.0';
+      String url = 'https://github.com/780ramialhakami780-jpg/IQ_Pharmacy39/releases/latest/download/IQ_Pharmacy39.apk';
+      String notes = '';
+
+      for (final r in rows) {
+        final k = (r['key'] ?? '').toString();
+        final v = (r['value'] ?? '').toString().trim();
+        if (k == 'latest_version' && v.isNotEmpty) latest = v;
+        if (k == 'min_version' && v.isNotEmpty) minVer = v;
+        if (k == 'update_url' && v.isNotEmpty) url = v;
+        if (k == 'update_notes' && v.isNotEmpty) notes = v;
+      }
+
+      final now = DateTime.now();
+      final stamp = '${now.year}/${now.month}/${now.day} • ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('update_last_checked', stamp);
+
+      if (!mounted) return;
+      setState(() {
+        _latestVersion = latest;
+        _minVersion = minVer;
+        _updateUrl = url;
+        _updateNotes = notes;
+        _lastChecked = stamp;
+        _checking = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+    final hasNewer = _compareVersions(_latestVersion, widget.currentVersion) > 0;
+    final isBelowMinVersion = _compareVersions(widget.currentVersion, _minVersion) < 0;
+    final isMandatoryBlock = isBelowMinVersion || (widget.forceBlockingMode && hasNewer);
+
+    return PopScope(
+      canPop: !isMandatoryBlock,
+      child: Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: !isMandatoryBlock,
+          title: Text(
+            isMandatoryBlock
+                ? AppPrefs.tr('تحديث إجباري مطلوب', 'Mandatory Update Required')
+                : AppPrefs.tr('تحديث البرنامج', 'Software Update'),
+          ),
+        ),
+        body: _checking
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: accent),
+                    const SizedBox(height: 18),
+                    Text(
+                      AppPrefs.tr('يتم البحث عن تحديثات...', 'Checking for updates...'),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              )
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  if (isMandatoryBlock) ...[
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent.withOpacity(0.14),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: Colors.redAccent, width: 1.5),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.lock_clock_rounded, color: Colors.redAccent, size: 34),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  AppPrefs.tr('تم إيقاف استخدام النسخة القديمة', 'Older Version Blocked'),
+                                  style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  AppPrefs.tr(
+                                    'إصدارك الحالي (${widget.currentVersion}) أقدم من الحد الأدنى المطلوب ($_minVersion). يرجى تحميل وتثبيت التحديث الجديد للاستمرار في استخدام التطبيق.',
+                                    'Your version (${widget.currentVersion}) is below the minimum required ($_minVersion). Please update to continue.',
+                                  ),
+                                  style: const TextStyle(fontSize: 12.5, height: 1.45),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                      leading: Icon(
+                        hasNewer ? Icons.system_update_alt_rounded : Icons.verified_rounded,
+                        color: isMandatoryBlock ? Colors.redAccent : (hasNewer ? accent : Colors.green),
+                        size: 30,
+                      ),
+                      title: Text(
+                        hasNewer
+                            ? AppPrefs.tr('يتوفر تحديث جديد ($_latestVersion)', 'Update available ($_latestVersion)')
+                            : AppPrefs.tr('برنامجك محدّث.', 'Your software is up to date.'),
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      subtitle: Text(
+                        _lastChecked.isNotEmpty
+                            ? '${AppPrefs.tr('آخر فحص:', 'Last checked:')} $_lastChecked'
+                            : AppPrefs.tr('اضغط للفحص اليدوي', 'Tap to check manually'),
+                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      onTap: _checkForUpdate,
+                    ),
+                  ),
+                  if (hasNewer || isMandatoryBlock) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 50,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isMandatoryBlock ? Colors.redAccent : accent,
+                          foregroundColor: isMandatoryBlock ? Colors.white : Colors.black,
+                        ),
+                        icon: const Icon(Icons.download_rounded),
+                        label: Text(
+                          AppPrefs.tr('تنزيل وتثبيت التحديث الآن', 'Download and install'),
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                        ),
+                        onPressed: () {
+                          final uri = Uri.tryParse(_updateUrl);
+                          if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
+                        },
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                    child: SwitchListTile(
+                      title: Text(AppPrefs.tr('التنزيل التلقائي عبر Wi-Fi', 'Auto download over Wi-Fi'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(
+                        AppPrefs.tr('البحث عن التحديثات تلقائياً عند الاتصال بشبكة Wi-Fi', 'Check updates automatically on Wi-Fi'),
+                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      value: _autoWifi,
+                      activeColor: accent,
+                      onChanged: (v) async {
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setBool('update_auto_wifi', v);
+                        setState(() => _autoWifi = v);
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(AppPrefs.tr('تحديث المعلومات', 'Update information'), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: accent)),
+                          const SizedBox(height: 10),
+                          Text('• ${AppPrefs.tr('إصدار التطبيق الحالي:', 'Current version:')} ${widget.currentVersion}'),
+                          const SizedBox(height: 4),
+                          Text('• ${AppPrefs.tr('الحد الأدنى المطلوب:', 'Minimum version:')} $_minVersion'),
+                          const SizedBox(height: 4),
+                          Text('• ${AppPrefs.tr('أحدث إصدار على الخادم:', 'Latest server version:')} $_latestVersion'),
+                          if (_updateNotes.isNotEmpty) ...[
+                            const Divider(height: 20),
+                            Text(AppPrefs.tr('ما الجديد في هذا الإصدار:', 'What is new:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            const SizedBox(height: 6),
+                            Text(_updateNotes, style: const TextStyle(fontSize: 13, height: 1.5, color: Colors.grey)),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
 }
 
 class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
