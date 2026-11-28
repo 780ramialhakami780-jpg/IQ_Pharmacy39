@@ -13,6 +13,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'app_prefs.dart';
 import 'main.dart';
 import 'subject_screen.dart';
@@ -818,11 +819,32 @@ class _HomeScreenState extends State<HomeScreen> {
                   _drawerToolTile(
                     icon: Icons.contact_phone_rounded,
                     iconColor: Colors.purpleAccent,
-                    title: AppPrefs.tr('دليل الدفعة والمناديب', 'Batch Directory & Links'),
-                    subtitle: AppPrefs.tr('أرقام التواصل والروابط المهمة للدفعة', 'Contacts & useful links'),
+                    title: AppPrefs.tr('دليل الطلاب والروابط المهمة', 'Batch Directory & Links'),
+                    subtitle: AppPrefs.tr('فتح الروابط المهمة وأرقام التواصل للدفعة', 'Open important links & batch contacts'),
                     onTap: () {
                       Navigator.pop(context);
                       Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
+                    },
+                  ),
+                  _drawerToolTile(
+                    icon: Icons.support_agent_rounded,
+                    iconColor: Colors.greenAccent,
+                    title: AppPrefs.tr('الدعم والأجهزة', 'Support & Devices'),
+                    subtitle: AppPrefs.tr('المحادثة الخاصة مع المطورين والمناديب وحالة الجهاز', 'Direct support chat & device status'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SupportAndDevicesScreen(
+                            studentId: _studentId,
+                            studentName: _displayFullName,
+                            studentGender: _studentGender,
+                            isAdmin: _isAdmin,
+                            onOpenAdminDevices: _isAdmin ? _promptAdminPassword : null,
+                          ),
+                        ),
+                      );
                     },
                   ),
 
@@ -2232,12 +2254,135 @@ class _HomeScreenState extends State<HomeScreen> {
             final accent = Theme.of(ctx).colorScheme.primary;
             final cardBg = Theme.of(ctx).cardColor;
             final orderedList = AppPrefs.applySubjectOrder(_subjects);
+            final sectionLabel = _isFemale
+                ? AppPrefs.tr('شطر الطالبات', 'Female Section')
+                : AppPrefs.tr('شطر الطلاب', 'Male Section');
+            final roleLabel = _isAdmin
+                ? AppPrefs.tr('مشرف / مندوب دفعة', 'Admin / Batch Representative')
+                : AppPrefs.tr('طالب', 'Student');
 
             return Scaffold(
               appBar: AppBar(title: Text(AppPrefs.tr('الإعدادات والتخصيص', 'Settings & Customization'))),
               body: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  // 1. تبويب معلومات الحساب (قابل للطي مثل الإشعارات ويعرض معلومات الطالب كاملة)
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: ExpansionTile(
+                      leading: Icon(Icons.account_circle_rounded, color: accent),
+                      title: Text(AppPrefs.tr('معلومات الحساب', 'Account Information'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(
+                        '$_displayFullName • $_studentId',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                      childrenPadding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: accent.withOpacity(0.08),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: accent.withOpacity(0.25)),
+                          ),
+                          child: Column(
+                            children: [
+                              _accountInfoRow(AppPrefs.tr('الاسم الكامل:', 'Full Name:'), _displayFullName, accent),
+                              const Divider(height: 14),
+                              _accountInfoRow(AppPrefs.tr('رقم القيد الجامعي:', 'Student ID:'), _studentId, accent),
+                              const Divider(height: 14),
+                              _accountInfoRow(AppPrefs.tr('الشطر الدراسي:', 'Section:'), sectionLabel, accent),
+                              const Divider(height: 14),
+                              _accountInfoRow(AppPrefs.tr('الصفة:', 'Role:'), roleLabel, accent),
+                              const Divider(height: 14),
+                              _accountInfoRow(
+                                AppPrefs.tr('البريد الجامعي:', 'University Email:'),
+                                _universityEmail.isNotEmpty
+                                    ? '$_universityEmail ✓'
+                                    : AppPrefs.tr('غير مرتبط بعد', 'Not linked yet'),
+                                _universityEmail.isNotEmpty ? Colors.green : Colors.orange,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Align(
+                          alignment: AlignmentDirectional.centerStart,
+                          child: Text(
+                            AppPrefs.tr('ربط أو تحديث البريد الجامعي:', 'Link or Update University Email:'),
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: accent),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Directionality(
+                                textDirection: TextDirection.ltr,
+                                child: TextField(
+                                  controller: emailCtrl,
+                                  textDirection: TextDirection.ltr,
+                                  textAlign: TextAlign.left,
+                                  keyboardType: TextInputType.emailAddress,
+                                  decoration: InputDecoration(
+                                    hintText: '$_studentId@su.edu.ye',
+                                    isDense: true,
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                              onPressed: savingEmail
+                                  ? null
+                                  : () async {
+                                      final em = emailCtrl.text.trim();
+                                      if (em.isEmpty || !em.contains('@')) {
+                                        ScaffoldMessenger.of(ctx).showSnackBar(
+                                          SnackBar(content: Text(AppPrefs.tr('يرجى إدخال بريد إلكتروني صحيح', 'Enter a valid email')), backgroundColor: Colors.red),
+                                        );
+                                        return;
+                                      }
+                                      setSettingsState(() => savingEmail = true);
+                                      try {
+                                        await Supabase.instance.client
+                                            .from('students')
+                                            .update({'university_email': em})
+                                            .eq('student_id', _studentId);
+                                        final prefs = await SharedPreferences.getInstance();
+                                        await prefs.setString('university_email', em);
+                                        setState(() => _universityEmail = em);
+                                        setSettingsState(() => savingEmail = false);
+                                        if (!ctx.mounted) return;
+                                        ScaffoldMessenger.of(ctx).showSnackBar(
+                                          SnackBar(content: Text(AppPrefs.tr('تم ربط البريد الجامعي بنجاح ✓', 'University email linked ✓')), backgroundColor: Colors.teal),
+                                        );
+                                      } catch (_) {
+                                        setSettingsState(() => savingEmail = false);
+                                        if (!ctx.mounted) return;
+                                        ScaffoldMessenger.of(ctx).showSnackBar(
+                                          SnackBar(content: Text(AppPrefs.tr('تعذر الحفظ (قد يكون البريد مستخدماً لطالب آخر)', 'Failed to save email')), backgroundColor: Colors.red),
+                                        );
+                                      }
+                                    },
+                              child: savingEmail
+                                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : Text(AppPrefs.tr('ربط', 'Link'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // 2. تحديث البرنامج
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2258,6 +2403,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
+                  // 3. إعدادات الإشعارات
                   FutureBuilder<SharedPreferences>(
                     future: SharedPreferences.getInstance(),
                     builder: (context, snap) {
@@ -2340,105 +2486,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  Card(
-                    color: cardBg,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(Icons.verified_user_rounded, color: accent),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(_displayFullName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                                    Text('${AppPrefs.tr('رقم القيد:', 'Student ID:')} $_studentId', style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                                  ],
-                                ),
-                              ),
-                              if (_universityEmail.isNotEmpty)
-                                Chip(
-                                  backgroundColor: Colors.green.withOpacity(0.18),
-                                  label: Text(AppPrefs.tr('مرتبط ✓', 'Linked ✓'), style: const TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)),
-                                ),
-                            ],
-                          ),
-                          const Divider(height: 24),
-                          Text(
-                            AppPrefs.tr('ربط البريد الجامعي (لنظام الكلية والتحضير)', 'Link University Email'),
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: accent),
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Directionality(
-                                  textDirection: TextDirection.ltr,
-                                  child: TextField(
-                                    controller: emailCtrl,
-                                    textDirection: TextDirection.ltr,
-                                    textAlign: TextAlign.left,
-                                    keyboardType: TextInputType.emailAddress,
-                                    decoration: InputDecoration(
-                                      hintText: '27094070@su.edu.ye',
-                                      isDense: true,
-                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
-                                onPressed: savingEmail
-                                    ? null
-                                    : () async {
-                                        final em = emailCtrl.text.trim();
-                                        if (em.isEmpty || !em.contains('@')) {
-                                          ScaffoldMessenger.of(ctx).showSnackBar(
-                                            SnackBar(content: Text(AppPrefs.tr('يرجى إدخال بريد إلكتروني صحيح', 'Enter a valid email')), backgroundColor: Colors.red),
-                                          );
-                                          return;
-                                        }
-                                        setSettingsState(() => savingEmail = true);
-                                        try {
-                                          await Supabase.instance.client
-                                              .from('students')
-                                              .update({'university_email': em})
-                                              .eq('student_id', _studentId);
-                                          final prefs = await SharedPreferences.getInstance();
-                                          await prefs.setString('university_email', em);
-                                          setState(() => _universityEmail = em);
-                                          setSettingsState(() => savingEmail = false);
-                                          if (!ctx.mounted) return;
-                                          ScaffoldMessenger.of(ctx).showSnackBar(
-                                            SnackBar(content: Text(AppPrefs.tr('تم ربط البريد الجامعي بنجاح ✓', 'University email linked ✓')), backgroundColor: Colors.teal),
-                                          );
-                                        } catch (_) {
-                                          setSettingsState(() => savingEmail = false);
-                                          if (!ctx.mounted) return;
-                                          ScaffoldMessenger.of(ctx).showSnackBar(
-                                            SnackBar(content: Text(AppPrefs.tr('تعذر الحفظ (قد يكون البريد مستخدماً لطالب آخر)', 'Failed to save email')), backgroundColor: Colors.red),
-                                          );
-                                        }
-                                      },
-                                child: savingEmail
-                                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                                    : Text(AppPrefs.tr('ربط', 'Link'), style: const TextStyle(fontWeight: FontWeight.bold)),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-
+                  // 4. الخلفيات والسمات
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2537,6 +2585,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
+                  // 5. الخط والحجم
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2596,6 +2645,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
+                  // 6. المواد وطريقة العرض
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2698,6 +2748,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
+                  // 7. الواجهة والأمان واللغة
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2864,6 +2915,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 10),
 
+                  // 8. النسخ الاحتياطي وإعادة الضبط
                   Card(
                     color: cardBg,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -2939,6 +2991,23 @@ class _HomeScreenState extends State<HomeScreen> {
           },
         ),
       ),
+    );
+  }
+
+  Widget _accountInfoRow(String label, String value, Color valueColor) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 12.5, color: Colors.grey, fontWeight: FontWeight.w600)),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: valueColor),
+          ),
+        ),
+      ],
     );
   }
 
@@ -3822,7 +3891,18 @@ class _ExamNightReviewScreenState extends State<ExamNightReviewScreen> {
                                 leading: const Icon(Icons.star_rounded, color: Colors.amber),
                                 title: Text(m['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
                                 subtitle: Text('${m['_subjName']} • المحاضرة ${m['lecture_number']}'),
-                                trailing: const Icon(Icons.open_in_new_rounded),
+                                trailing: FilledButton.tonalIcon(
+                                  style: FilledButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    visualDensity: VisualDensity.compact,
+                                  ),
+                                  icon: const Icon(Icons.open_in_new_rounded, size: 15),
+                                  label: Text(AppPrefs.tr('فتح الرابط', 'Open Link'), style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+                                  onPressed: () {
+                                    final uri = Uri.tryParse((m['file_url'] ?? '').toString());
+                                    if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
+                                  },
+                                ),
                                 onTap: () {
                                   final uri = Uri.tryParse((m['file_url'] ?? '').toString());
                                   if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -3993,14 +4073,30 @@ class AppGlobalSearchDelegate extends SearchDelegate {
         },
       },
       {
-        'title': AppPrefs.tr('دليل الدفعة والمناديب', 'Batch Directory & Links'),
-        'subtitle': AppPrefs.tr('أرقام التواصل والروابط المهمة للدفعة', 'Contacts & useful batch links'),
-        'keywords': 'دليل الدفعة المناديب ارقام روابط تواصل directory contacts links',
+        'title': AppPrefs.tr('دليل الطلاب والروابط المهمة', 'Batch Directory & Links'),
+        'subtitle': AppPrefs.tr('فتح الروابط المهمة وأرقام التواصل للدفعة', 'Open important links & batch contacts'),
+        'keywords': 'دليل الطلاب الدفعة المناديب ارقام روابط تواصل فتح الرابط directory contacts links',
         'icon': Icons.contact_phone_rounded,
         'color': Colors.purpleAccent,
         'action': () {
           close(context, null);
           Navigator.push(context, MaterialPageRoute(builder: (_) => const DirectoryScreen()));
+        },
+      },
+      {
+        'title': AppPrefs.tr('الدعم والأجهزة', 'Support & Devices'),
+        'subtitle': AppPrefs.tr('المحادثة الخاصة مع فريق الدعم وحالة الجهاز المرتبط', 'Private support chat & linked device status'),
+        'keywords': 'الدعم والاجهزة دعم فني مطورين مناديب جهاز محادثة خاصة support devices',
+        'icon': Icons.support_agent_rounded,
+        'color': Colors.greenAccent,
+        'action': () {
+          close(context, null);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const SupportAndDevicesScreen(),
+            ),
+          );
         },
       },
       {
@@ -5462,6 +5558,312 @@ class _SupportInboxScreenState extends State<SupportInboxScreen> {
 /// محوّل الأسماء والمواد التلقائي بين العربية والإنجليزية
 /// يحوّل أسماء المقررات الدراسية وأسماء الطلاب تلقائياً عند تفعيل اللغة الإنجليزية
 /// ============================================================================
+
+class SupportAndDevicesScreen extends StatefulWidget {
+  final String? studentId;
+  final String? studentName;
+  final String? studentGender;
+  final bool? isAdmin;
+  final VoidCallback? onOpenAdminDevices;
+
+  const SupportAndDevicesScreen({
+    super.key,
+    this.studentId,
+    this.studentName,
+    this.studentGender,
+    this.isAdmin,
+    this.onOpenAdminDevices,
+  });
+
+  @override
+  State<SupportAndDevicesScreen> createState() => _SupportAndDevicesScreenState();
+}
+
+class _SupportAndDevicesScreenState extends State<SupportAndDevicesScreen> {
+  String _myId = '';
+  String _myName = '';
+  String _myGender = 'male';
+  bool _isAdmin = false;
+  String _currentDeviceId = '';
+  String _registeredDeviceId = '';
+  bool _loading = true;
+  List<Map<String, dynamic>> _contacts = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
+  }
+
+  Future<String> _resolveLocalDeviceId() async {
+    if (kIsWeb) return 'web_browser_device';
+    try {
+      final info = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        final android = await info.androidInfo;
+        return android.id;
+      } else if (Platform.isIOS) {
+        final ios = await info.iosInfo;
+        return ios.identifierForVendor ?? 'ios_device';
+      }
+    } catch (_) {}
+    return 'android_device';
+  }
+
+  Future<void> _loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final id = (widget.studentId ?? prefs.getString('student_id') ?? '').trim();
+    final name = (widget.studentName ?? prefs.getString('full_name') ?? '').trim();
+    final gender = (widget.studentGender ?? prefs.getString('student_gender') ?? 'male').trim();
+    final admin = widget.isAdmin ?? (prefs.getBool('is_admin') ?? false);
+    final localDev = await _resolveLocalDeviceId();
+
+    String cloudDev = localDev;
+    List<Map<String, dynamic>> loadedContacts = [];
+
+    try {
+      final client = Supabase.instance.client;
+      if (id.isNotEmpty) {
+        final st = await client.from('students').select('device_id').eq('student_id', id).maybeSingle();
+        if (st != null && (st['device_id'] ?? '').toString().trim().isNotEmpty) {
+          cloudDev = st['device_id'].toString().trim();
+        }
+      }
+
+      final rows = await client
+          .from('support_contacts')
+          .select()
+          .eq('is_active', true)
+          .order('sort_order', ascending: true);
+      loadedContacts = rows.map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e)).toList();
+    } catch (_) {}
+
+    if (!mounted) return;
+    setState(() {
+      _myId = id;
+      _myName = name;
+      _myGender = gender;
+      _isAdmin = admin;
+      _currentDeviceId = localDev;
+      _registeredDeviceId = cloudDev;
+      _contacts = loadedContacts;
+      _loading = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = Theme.of(context).colorScheme.primary;
+    final isDeviceMatched = _registeredDeviceId.isEmpty || _registeredDeviceId == _currentDeviceId;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(AppPrefs.tr('الدعم والأجهزة', 'Support & Devices')),
+        actions: [
+          IconButton(
+            tooltip: AppPrefs.tr('تحديث', 'Refresh'),
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: () {
+              setState(() => _loading = true);
+              _loadData();
+            },
+          ),
+        ],
+      ),
+      body: _loading
+          ? Center(child: CircularProgressIndicator(color: accent))
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                // 1. بطاقة حالة الجهاز المرتبط
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(18),
+                    side: BorderSide(color: isDeviceMatched ? Colors.green.withOpacity(0.45) : Colors.orange),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            CircleAvatar(
+                              backgroundColor: (isDeviceMatched ? Colors.green : Colors.orange).withOpacity(0.16),
+                              child: Icon(
+                                isDeviceMatched ? Icons.phonelink_lock_rounded : Icons.warning_amber_rounded,
+                                color: isDeviceMatched ? Colors.green : Colors.orange,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    AppPrefs.tr('حالة الجهاز والحساب', 'Device & Account Status'),
+                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    isDeviceMatched
+                                        ? AppPrefs.tr('هذا الهاتف موثّق ومرتبط برقم قيدك ✓', 'This device is verified & linked ✓')
+                                        : AppPrefs.tr('يوجد اختلاف في معرّف الجهاز المرتبط', 'Device mismatch detected'),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: isDeviceMatched ? Colors.green : Colors.orange,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const Divider(height: 22),
+                        Text('${AppPrefs.tr('الطالب:', 'Student:')} $_myName ($_myId)', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${AppPrefs.tr('الشطر:', 'Section:')} ${_myGender == 'female' ? AppPrefs.tr('شطر الطالبات', 'Female') : AppPrefs.tr('شطر الطلاب', 'Male')}',
+                          style: const TextStyle(fontSize: 12.5, color: Colors.grey),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${AppPrefs.tr('معرّف الجهاز الحالي:', 'Current Device ID:')} $_currentDeviceId',
+                          style: const TextStyle(fontSize: 11.5, color: Colors.grey),
+                        ),
+                        if (_isAdmin && widget.onOpenAdminDevices != null) ...[
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.admin_panel_settings_rounded, color: Colors.amber),
+                              label: Text(AppPrefs.tr('إدارة الأجهزة وفك القفل (لوحة الإدارة)', 'Manage Devices & Unlock (Admin)')),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                widget.onOpenAdminDevices!();
+                              },
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 14),
+
+                // 2. صندوق المحادثات الخاصة
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    leading: CircleAvatar(
+                      backgroundColor: accent.withOpacity(0.18),
+                      child: Icon(Icons.forum_rounded, color: accent),
+                    ),
+                    title: Text(
+                      AppPrefs.tr('صندوق المحادثات الخاصة والردود', 'Private Support Inbox'),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5),
+                    ),
+                    subtitle: Text(
+                      AppPrefs.tr('عرض جميع محادثاتك الخاصة مع المطورين والمناديب', 'View all your private conversations'),
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    trailing: FilledButton.tonalIcon(
+                      icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                      label: Text(AppPrefs.tr('فتح', 'Open'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => SupportInboxScreen(
+                              myId: _myId,
+                              myName: _myName,
+                              isAdmin: _isAdmin,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 18),
+                Text(
+                  AppPrefs.tr('فريق الدعم الفني والمطورين والمناديب', 'Support Team, Developers & Representatives'),
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: accent),
+                ),
+                const SizedBox(height: 8),
+
+                if (_contacts.isEmpty)
+                  Card(
+                    color: cardBg,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Text(
+                        AppPrefs.tr('لا يوجد أعضاء دعم مضافون حالياً. يمكنك استخدام صندوق المحادثات الخاصة بالأعلى.', 'No support contacts listed yet.'),
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                    ),
+                  )
+                else
+                  ..._contacts.map((c) {
+                    final peerId = (c['student_id'] ?? '').toString().trim();
+                    final peerName = (c['display_name'] ?? '').toString().trim();
+                    final peerRole = (c['role_title'] ?? '').toString().trim();
+
+                    return Card(
+                      color: cardBg,
+                      margin: const EdgeInsets.only(bottom: 10),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        leading: CircleAvatar(
+                          backgroundColor: accent.withOpacity(0.18),
+                          child: Icon(Icons.support_agent_rounded, color: accent),
+                        ),
+                        title: Text(peerName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5)),
+                        subtitle: Text(peerRole, style: TextStyle(fontSize: 12, color: accent, fontWeight: FontWeight.w600)),
+                        trailing: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: accent,
+                            foregroundColor: Colors.black,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.chat_rounded, size: 16),
+                          label: Text(AppPrefs.tr('محادثة', 'Chat'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5)),
+                          onPressed: () {
+                            if (peerId.isEmpty) return;
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => DirectSupportChatScreen(
+                                  myId: _myId,
+                                  myName: _myName,
+                                  peerId: peerId,
+                                  peerName: peerName,
+                                  peerRole: peerRole,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    );
+                  }),
+              ],
+            ),
+    );
+  }
+}
+
 class AppLocalizer {
   static const Map<String, String> _subjectTranslations = {
     'الفيزياء الصيدلانية': 'Physical Pharmacy',
