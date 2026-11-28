@@ -776,15 +776,32 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
       }
 
       final String currentDeviceId = await _getDeviceId();
-      final String? registeredDevice = response['device_id'];
+      final String? registeredDevice = response['device_id']?.toString().trim();
 
-      if (registeredDevice != null && registeredDevice != currentDeviceId) {
+      if (registeredDevice != null && registeredDevice.isNotEmpty && registeredDevice != currentDeviceId) {
         setState(() {
-          _errorMessage = 'عذراً، هذا الرقم مرتبط بهاتف آخر مسبقاً ولا يمكن استخدامه مرتين.';
+          _errorMessage = 'عذراً، هذا الرقم مرتبط بهاتف آخر مسبقاً ولا يمكن استخدامه مرتين. يرجى مراجعة المندوب لفك القفل.';
           _isLoading = false;
         });
         return;
       }
+
+      // فحص إضافي في app_settings لمنع إعادة التسجيل بعد مسح البيانات أو إعادة التثبيت إذا كان الحساب مقيداً بجهاز سابق ولم يُفك قفله
+      try {
+        final lockRow = await Supabase.instance.client
+            .from('app_settings')
+            .select('value')
+            .eq('key', 'device_lock_$studentId')
+            .maybeSingle();
+        final lockedDevice = (lockRow?['value'] ?? '').toString().trim();
+        if (lockedDevice.isNotEmpty && lockedDevice != currentDeviceId) {
+          setState(() {
+            _errorMessage = 'هذا الحساب مقفل على جهاز سابق ولا يمكن إعادة تفعيله بعد مسح البيانات أو إعادة التثبيت إلا بعد فك القفل من لوحة الإدارة.';
+            _isLoading = false;
+          });
+          return;
+        }
+      } catch (_) {}
 
       setState(() {
         _foundStudent = response;
@@ -810,6 +827,13 @@ class _StudentRegistrationScreenState extends State<StudentRegistrationScreen> {
           .from('students')
           .update({'device_id': currentDeviceId})
           .eq('student_id', studentId);
+
+      try {
+        await Supabase.instance.client.from('app_settings').upsert({
+          'key': 'device_lock_$studentId',
+          'value': currentDeviceId,
+        });
+      } catch (_) {}
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('is_registered', true);
