@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:printing/printing.dart';
 import 'app_prefs.dart';
 import 'main.dart';
 import 'home_screen.dart';
@@ -37,12 +40,22 @@ class _SubjectScreenState extends State<SubjectScreen> {
   Map<String, String> _localFilePaths = {};
   Map<String, double> _downloadProgress = {};
 
-  bool _loading = true;
-  String _searchQuery = '';
-  String _selectedFilter = 'الكل';
+  /// حالة إتقان كل سؤال: 'new' | 'correct' | 'mastered' | 'weak' | 'wrong'
+  Map<String, String> _questionStatus = {};
+  Map<String, int> _wrongAttempts = {};
 
-  final Map<dynamic, int> _selectedAnswers = {};
-  bool _quizSubmitted = false;
+  bool _loading = true;
+  String _matSearchQuery = '';
+  String _selectedMatFilter = 'الكل';
+
+  String _qSearchQuery = '';
+  String _selectedQFilter = 'الكل';
+  String _selectedLectureFilter = 'الكل';
+  bool _shuffleQuestions = false;
+  bool _showInstantExplanation = true;
+
+  /// إجابات التدريب التفاعلي الفوري
+  final Map<String, int> _interactiveChosen = {};
 
   dynamic get _subjectId => widget.subject['id'];
   String get _subjectName => AppLocalizer.localizeSubjectName(widget.subject);
@@ -69,6 +82,17 @@ class _SubjectScreenState extends State<SubjectScreen> {
     final favM = (prefs.getStringList('fav_m_$sid') ?? []).toSet();
     final favQ = (prefs.getStringList('fav_q_$sid') ?? []).toSet();
 
+    Map<String, String> statusMap = {};
+    Map<String, int> wrongMap = {};
+    try {
+      final rawSt = jsonDecode(prefs.getString('q_status_$sid') ?? '{}') as Map<String, dynamic>;
+      statusMap = rawSt.map((k, v) => MapEntry(k, v.toString()));
+    } catch (_) {}
+    try {
+      final rawWr = jsonDecode(prefs.getString('q_wrong_$sid') ?? '{}') as Map<String, dynamic>;
+      wrongMap = rawWr.map((k, v) => MapEntry(k, int.tryParse(v.toString()) ?? 0));
+    } catch (_) {}
+
     final Map<String, String> savedPaths = {};
     if (!kIsWeb) {
       try {
@@ -88,6 +112,8 @@ class _SubjectScreenState extends State<SubjectScreen> {
         _questions = cachedQs;
         _favMaterialIds = favM;
         _favQuestionIds = favQ;
+        _questionStatus = statusMap;
+        _wrongAttempts = wrongMap;
         _localFilePaths = savedPaths;
         _loading = cachedMats.isEmpty && cachedQs.isEmpty;
       });
@@ -119,6 +145,50 @@ class _SubjectScreenState extends State<SubjectScreen> {
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _saveProgressStats() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sid = _subjectId;
+    await prefs.setString('q_status_$sid', jsonEncode(_questionStatus));
+    await prefs.setString('q_wrong_$sid', jsonEncode(_wrongAttempts));
+  }
+
+  Future<void> _recordQuestionAttempt(String qKey, bool isCorrect) async {
+    setState(() {
+      if (isCorrect) {
+        final prev = _questionStatus[qKey] ?? 'new';
+        if (prev == 'correct' || prev == 'mastered') {
+          _questionStatus[qKey] = 'mastered';
+        } else {
+          _questionStatus[qKey] = 'correct';
+        }
+      } else {
+        final wrongs = (_wrongAttempts[qKey] ?? 0) + 1;
+        _wrongAttempts[qKey] = wrongs;
+        _questionStatus[qKey] = wrongs >= 2 ? 'weak' : 'wrong';
+      }
+    });
+    await _saveProgressStats();
+  }
+
+  Future<void> _markQuestionMastered(String qKey, bool mastered) async {
+    setState(() {
+      _questionStatus[qKey] = mastered ? 'mastered' : 'weak';
+    });
+    await _saveProgressStats();
+  }
+
+  Future<void> _resetSubjectProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    final sid = _subjectId;
+    setState(() {
+      _questionStatus.clear();
+      _wrongAttempts.clear();
+      _interactiveChosen.clear();
+    });
+    await prefs.remove('q_status_$sid');
+    await prefs.remove('q_wrong_$sid');
   }
 
   Future<void> _toggleFavMaterial(dynamic matId) async {
@@ -274,7 +344,6 @@ class _SubjectScreenState extends State<SubjectScreen> {
     }
 
     final savedPath = await _downloadToLocalCache(mat);
-
     if (!mounted) return;
 
     if (_isImageFile(mat)) {
@@ -364,34 +433,179 @@ class _SubjectScreenState extends State<SubjectScreen> {
     }
   }
 
+  /// نافذة إعدادات وفلترة بنك الأسئلة (الأيقونة الموجودة في أعلى يسار الشريط العلوي)
+  void _showQuestionBankSettingsSheet(Color cardBg, Color accent) {
+    final lecSet = <String>{'الكل'};
+    for (final q in _questions) {
+      final ln = (q['lecture_number'] ?? '').toString().trim();
+      if (ln.isNotEmpty) lecSet.add(ln);
+    }
+    final lectures = lecSet.toList();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: cardBg,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    AppPrefs.tr('إعدادات وفلترة التدريب', 'Training & Filter Settings'),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: accent),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh_rounded),
+                    tooltip: AppPrefs.tr('تحديث البيانات', 'Refresh'),
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _loadLocalAndSync();
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (lectures.length > 1) ...[
+                Text(AppPrefs.tr('تصفية حسب المحاضرة:', 'Filter by Lecture:'), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                const SizedBox(height: 8),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: lectures.map((lec) {
+                      final sel = _selectedLectureFilter == lec;
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: ChoiceChip(
+                          label: Text(lec == 'الكل' ? AppPrefs.tr('كل المحاضرات', 'All Lectures') : '${AppPrefs.tr('محاضرة', 'Lecture')} $lec'),
+                          selected: sel,
+                          selectedColor: accent,
+                          labelStyle: TextStyle(color: sel ? Colors.white : null, fontWeight: FontWeight.bold, fontSize: 12),
+                          onSelected: (_) {
+                            setState(() => _selectedLectureFilter = lec);
+                            setSheetState(() {});
+                          },
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                const Divider(height: 22),
+              ],
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(AppPrefs.tr('ترتيب عشوائي للأسئلة', 'Shuffle Questions Order')),
+                value: _shuffleQuestions,
+                activeColor: accent,
+                onChanged: (v) {
+                  setState(() => _shuffleQuestions = v);
+                  setSheetState(() {});
+                },
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(AppPrefs.tr('إظهار التوضيح العلمي فور الإجابة', 'Show Instant Explanation')),
+                value: _showInstantExplanation,
+                activeColor: accent,
+                onChanged: (v) {
+                  setState(() => _showInstantExplanation = v);
+                  setSheetState(() {});
+                },
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.redAccent),
+                  icon: const Icon(Icons.restart_alt_rounded),
+                  label: Text(AppPrefs.tr('تصفير إحصائيات التقدم لهذه المادة', 'Reset Subject Progress')),
+                  onPressed: () async {
+                    await _resetSubjectProgress();
+                    if (ctx.mounted) Navigator.pop(ctx);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<Map<String, dynamic>> get _filteredQuestions {
+    final list = _questions.map((e) => Map<String, dynamic>.from(e)).where((q) {
+      final qKey = (q['id'] ?? q['question_text']).toString();
+      final status = _questionStatus[qKey] ?? 'new';
+      final text = (q['question_text'] ?? '').toString().toLowerCase();
+      final lec = (q['lecture_number'] ?? '').toString().trim();
+
+      if (_selectedLectureFilter != 'الكل' && lec != _selectedLectureFilter) {
+        return false;
+      }
+
+      if (_qSearchQuery.isNotEmpty) {
+        final clean = _qSearchQuery.replaceAll('#', '').trim();
+        final idxMatch = (_questions.indexWhere((item) => item['id'] == q['id']) + 1).toString() == clean;
+        if (!text.contains(clean.toLowerCase()) && !idxMatch) {
+          return false;
+        }
+      }
+
+      if (_selectedQFilter == 'جديد') return status == 'new';
+      if (_selectedQFilter == 'صحيح') return status == 'correct' || status == 'mastered';
+      if (_selectedQFilter == 'متقن') return status == 'mastered';
+      if (_selectedQFilter == 'ضعيف') return status == 'weak' || status == 'wrong';
+      if (_selectedQFilter == 'خطأ') return status == 'wrong';
+      return true;
+    }).toList();
+
+    if (_shuffleQuestions) {
+      list.shuffle(Random(42));
+    }
+    return list;
+  }
+
+  int get _masteredCount {
+    int count = 0;
+    for (final q in _questions) {
+      final qKey = (q['id'] ?? q['question_text']).toString();
+      final st = _questionStatus[qKey];
+      if (st == 'mastered' || st == 'correct') count++;
+    }
+    return count;
+  }
+
   @override
   Widget build(BuildContext context) {
     final cardBg = Theme.of(context).cardColor;
     final accent = widget.defaultColor;
 
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         appBar: AppBar(
           title: Text(_subjectName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
           actions: [
             IconButton(
-              tooltip: AppPrefs.tr('تحديث محتوى المادة', 'Refresh Subject'),
-              icon: const Icon(Icons.refresh_rounded),
-              onPressed: _loadLocalAndSync,
+              tooltip: AppPrefs.tr('إعدادات التدريب والفلترة', 'Training Settings & Filters'),
+              icon: Icon(Icons.tune_rounded, color: accent),
+              onPressed: () => _showQuestionBankSettingsSheet(cardBg, accent),
             ),
           ],
           bottom: TabBar(
+            isScrollable: false,
             indicatorColor: accent,
+            labelColor: accent,
+            labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
             tabs: [
-              Tab(
-                icon: const Icon(Icons.folder_copy_rounded, size: 18),
-                text: '${AppPrefs.tr('المحاضرات والملفات', 'Files & Lectures')} (${_materials.length})',
-              ),
-              Tab(
-                icon: const Icon(Icons.quiz_rounded, size: 18),
-                text: '${AppPrefs.tr('بنك الأسئلة', 'Question Bank')} (${_questions.length})',
-              ),
+              Tab(text: AppPrefs.tr('التدريب والأسئلة', 'Practice & Quiz')),
+              Tab(text: AppPrefs.tr('المحاضرات والملفات', 'Lectures & Files')),
+              Tab(text: AppPrefs.tr('نقاط الضعف والإحصاء', 'Weakness & Stats')),
             ],
           ),
         ),
@@ -399,14 +613,400 @@ class _SubjectScreenState extends State<SubjectScreen> {
             ? Center(child: CircularProgressIndicator(color: accent))
             : TabBarView(
                 children: [
+                  _buildTrainingAndQuestionsTab(cardBg, accent),
                   _buildMaterialsTab(cardBg, accent),
-                  _buildQuestionsTab(cardBg, accent),
+                  _buildWeaknessAndStatsTab(cardBg, accent),
                 ],
               ),
       ),
     );
   }
 
+  /// =========================================================================
+  /// التبويب الأول: التدريب والأسئلة (إتقان المادة + الأنماط الأربعة + بنك الأسئلة)
+  /// =========================================================================
+  Widget _buildTrainingAndQuestionsTab(Color cardBg, Color accent) {
+    final totalQs = _questions.length;
+    final mastered = _masteredCount;
+    final masteryPct = totalQs > 0 ? ((mastered / totalQs) * 100).round() : 0;
+
+    int weakCount = 0;
+    for (final q in _questions) {
+      final k = (q['id'] ?? q['question_text']).toString();
+      if (_questionStatus[k] == 'weak' || _questionStatus[k] == 'wrong') weakCount++;
+    }
+
+    final filterChips = [
+      {'key': 'الكل', 'label': AppPrefs.tr('الكل', 'All')},
+      {'key': 'جديد', 'label': AppPrefs.tr('جديد', 'New')},
+      {'key': 'صحيح', 'label': AppPrefs.tr('صحيح', 'Correct')},
+      {'key': 'متقن', 'label': AppPrefs.tr('متقن', 'Mastered')},
+      {'key': 'ضعيف', 'label': '${AppPrefs.tr('ضعيف', 'Weak')} ($weakCount)'},
+      {'key': 'خطأ', 'label': AppPrefs.tr('خطأ', 'Wrong')},
+    ];
+
+    final visibleQuestions = _filteredQuestions;
+
+    return RefreshIndicator(
+      onRefresh: _loadLocalAndSync,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // 1. بطاقة إتقان المادة
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: cardBg,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Colors.grey.withOpacity(0.2)),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${AppPrefs.tr('إتقان المادة:', 'Subject Mastery:')} $masteryPct%',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    ),
+                    Text(
+                      '$mastered / $totalQs ${AppPrefs.tr('سؤال', 'questions')}',
+                      style: const TextStyle(fontSize: 12.5, color: Colors.grey, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: LinearProgressIndicator(
+                    value: totalQs > 0 ? (mastered / totalQs).clamp(0.0, 1.0) : 0.0,
+                    minHeight: 7,
+                    backgroundColor: Colors.grey.withOpacity(0.2),
+                    color: accent,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 14),
+
+          // 2. شبكة أنماط التدريب الأربعة (البطاقات السريعة، التدريب التفاعلي، الاختبار المحاكي، وضع الحفظ)
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 1.48,
+            children: [
+              _studyModeCard(
+                cardBg: cardBg,
+                icon: Icons.style_rounded,
+                iconColor: Colors.amber,
+                title: AppPrefs.tr('البطاقات السريعة', 'Flashcards'),
+                subtitle: AppPrefs.tr('اقلب البطاقة وقيّم حفظك', 'Flip & rate recall'),
+                onTap: () => _launchStudyMode('flashcards', accent),
+              ),
+              _studyModeCard(
+                cardBg: cardBg,
+                icon: Icons.fact_check_rounded,
+                iconColor: accent,
+                title: AppPrefs.tr('التدريب التفاعلي', 'Interactive Quiz'),
+                subtitle: AppPrefs.tr('حل مع التوضيح الفوري', 'Solve with instant hints'),
+                onTap: () => _launchStudyMode('interactive', accent),
+              ),
+              _studyModeCard(
+                cardBg: cardBg,
+                icon: Icons.timer_rounded,
+                iconColor: Colors.tealAccent.shade700,
+                title: AppPrefs.tr('الاختبار المحاكي', 'Mock Exam'),
+                subtitle: AppPrefs.tr('اختبار عشوائي بمؤقت زمني', 'Timed random exam'),
+                onTap: () => _launchStudyMode('mock_exam', accent),
+              ),
+              _studyModeCard(
+                cardBg: cardBg,
+                icon: Icons.menu_book_rounded,
+                iconColor: Colors.blueAccent,
+                title: AppPrefs.tr('وضع الحفظ', 'Memorization Mode'),
+                subtitle: AppPrefs.tr('تصفح السؤال مع إظهار الجواب', 'Browse Q&A directly'),
+                onTap: () => _launchStudyMode('memorize', accent),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 18),
+
+          // 3. عنوان بنك الأسئلة وشريط البحث والفلاتر
+          Text(
+            '${AppPrefs.tr('بنك الأسئلة', 'Question Bank')} ($totalQs)',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            onChanged: (v) => setState(() => _qSearchQuery = v.trim()),
+            decoration: InputDecoration(
+              hintText: AppPrefs.tr('ابحث بكلمة أو رقم السؤال (مثلاً #15)...', 'Search keyword or #15...'),
+              prefixIcon: const Icon(Icons.search_rounded),
+              isDense: true,
+              filled: true,
+              fillColor: cardBg,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 36,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: filterChips.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 6),
+              itemBuilder: (_, idx) {
+                final chip = filterChips[idx];
+                final isSel = _selectedQFilter == chip['key'];
+                return ChoiceChip(
+                  label: Text(
+                    chip['label']!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: isSel ? Colors.white : null,
+                    ),
+                  ),
+                  selected: isSel,
+                  selectedColor: accent,
+                  onSelected: (_) => setState(() => _selectedQFilter = chip['key']!),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          if (visibleQuestions.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: Text(
+                  totalQs == 0
+                      ? AppPrefs.tr(
+                          'لا توجد أسئلة مضافة لهذه المادة حتى الآن.\nسيتم تحديثها تلقائياً فور إضافتها من الإدارة.',
+                          'No questions added for this subject yet.\nIt will update automatically once added.',
+                        )
+                      : AppPrefs.tr('لا توجد أسئلة مطابقة للفلتر الحالي.', 'No questions match current filter.'),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.grey, fontSize: 13.5, height: 1.6),
+                ),
+              ),
+            )
+          else
+            ...List.generate(visibleQuestions.length, (idx) {
+              final q = visibleQuestions[idx];
+              final qKey = (q['id'] ?? q['question_text']).toString();
+              final isFav = _favQuestionIds.contains(qKey);
+              final List<dynamic> opts = q['options'] is String ? jsonDecode(q['options']) : (q['options'] ?? []);
+              final int correctIdx = q['correct_index'] ?? 0;
+              final int? chosenIdx = _interactiveChosen[qKey];
+              final explanation = (q['explanation'] ?? '').toString().trim();
+              final st = _questionStatus[qKey] ?? 'new';
+
+              return Card(
+                color: cardBg,
+                margin: const EdgeInsets.only(bottom: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppPrefs.cardRadius)),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: accent.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text('#${idx + 1}', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: accent)),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              (q['question_text'] ?? '').toString(),
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, height: 1.4),
+                            ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              isFav ? Icons.star_rounded : Icons.star_border_rounded,
+                              color: isFav ? Colors.amber : Colors.grey,
+                            ),
+                            onPressed: () => _toggleFavQuestion(qKey),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      ...List.generate(opts.length, (oIdx) {
+                        final isChosen = chosenIdx == oIdx;
+                        final isRight = oIdx == correctIdx;
+                        final showResult = chosenIdx != null;
+                        Color? tileColor;
+                        if (showResult) {
+                          if (isRight) {
+                            tileColor = Colors.green.withOpacity(0.18);
+                          } else if (isChosen && !isRight) {
+                            tileColor = Colors.redAccent.withOpacity(0.18);
+                          }
+                        }
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          decoration: BoxDecoration(
+                            color: tileColor,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: showResult && isRight
+                                  ? Colors.green
+                                  : (isChosen ? Colors.redAccent : Colors.grey.withOpacity(0.25)),
+                            ),
+                          ),
+                          child: ListTile(
+                            dense: true,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            leading: Icon(
+                              showResult
+                                  ? (isRight
+                                      ? Icons.check_circle_rounded
+                                      : (isChosen ? Icons.cancel_rounded : Icons.radio_button_unchecked_rounded))
+                                  : Icons.radio_button_unchecked_rounded,
+                              size: 20,
+                              color: showResult && isRight
+                                  ? Colors.green
+                                  : (isChosen ? Colors.redAccent : Colors.grey),
+                            ),
+                            title: Text(opts[oIdx].toString(), style: const TextStyle(fontSize: 13.5)),
+                            onTap: () {
+                              setState(() => _interactiveChosen[qKey] = oIdx);
+                              _recordQuestionAttempt(qKey, oIdx == correctIdx);
+                            },
+                          ),
+                        );
+                      }),
+                      if (chosenIdx != null && _showInstantExplanation && explanation.isNotEmpty)
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(top: 6),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text('💡 ${AppPrefs.tr('التوضيح:', 'Explanation:')} $explanation', style: const TextStyle(fontSize: 12.5)),
+                        ),
+                      if (st != 'new')
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              Text(
+                                st == 'mastered'
+                                    ? AppPrefs.tr('متقن ✓✓', 'Mastered ✓✓')
+                                    : (st == 'correct'
+                                        ? AppPrefs.tr('إجابة صحيحة ✓', 'Correct ✓')
+                                        : AppPrefs.tr('يحتاج مراجعة ⚠️', 'Needs Review ⚠️')),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: (st == 'mastered' || st == 'correct') ? Colors.green : Colors.orange,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+
+  Widget _studyModeCard({
+    required Color cardBg,
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: cardBg,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.grey.withOpacity(0.18)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: iconColor.withOpacity(0.16),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, color: iconColor, size: 22),
+            ),
+            const Spacer(),
+            Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+            const SizedBox(height: 2),
+            Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _launchStudyMode(String mode, Color accent) {
+    final list = _filteredQuestions.isNotEmpty
+        ? _filteredQuestions
+        : _questions.map((e) => Map<String, dynamic>.from(e)).toList();
+
+    if (list.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppPrefs.tr('لا توجد أسئلة متاحة في هذه المادة لبدء التدريب', 'No questions available in this subject yet')),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _SubjectStudySessionScreen(
+          subjectName: _subjectName,
+          mode: mode,
+          questions: list,
+          accentColor: accent,
+          onQuestionEvaluated: (qKey, isCorrect) => _recordQuestionAttempt(qKey, isCorrect),
+          onToggleMastered: (qKey, mastered) => _markQuestionMastered(qKey, mastered),
+        ),
+      ),
+    );
+  }
+
+  /// =========================================================================
+  /// التبويب الثاني: المحاضرات والملفات (مع عارض المستندات الداخلي والتكبير بالأصابع)
+  /// =========================================================================
   Widget _buildMaterialsTab(Color cardBg, Color accent) {
     final filters = ['الكل', 'PDF', 'WORD', 'EXCEL', 'PPT', 'AUDIO', 'VIDEO', 'صور'];
 
@@ -416,17 +1016,17 @@ class _SubjectScreenState extends State<SubjectScreen> {
       final ext = _guessExtension(m);
       final fType = (m['file_type'] ?? '').toString().toUpperCase();
 
-      if (_searchQuery.isNotEmpty && !title.contains(_searchQuery.toLowerCase())) {
+      if (_matSearchQuery.isNotEmpty && !title.contains(_matSearchQuery.toLowerCase())) {
         return false;
       }
 
-      if (_selectedFilter == 'PDF') return ext == 'pdf' || fType == 'PDF';
-      if (_selectedFilter == 'WORD') return ['doc', 'docx'].contains(ext) || fType == 'DOCX';
-      if (_selectedFilter == 'EXCEL') return ['xls', 'xlsx', 'csv'].contains(ext) || fType == 'XLSX';
-      if (_selectedFilter == 'PPT') return ['ppt', 'pptx'].contains(ext) || fType == 'PPTX';
-      if (_selectedFilter == 'AUDIO') return ['mp3', 'm4a', 'wav'].contains(ext) || fType == 'AUDIO' || fType == 'MP3';
-      if (_selectedFilter == 'VIDEO') return ['mp4', 'mkv', 'mov'].contains(ext) || fType == 'VIDEO' || fType == 'MP4';
-      if (_selectedFilter == 'صور') return ['jpg', 'jpeg', 'png', 'webp'].contains(ext) || fType == 'JPG';
+      if (_selectedMatFilter == 'PDF') return ext == 'pdf' || fType == 'PDF';
+      if (_selectedMatFilter == 'WORD') return ['doc', 'docx'].contains(ext) || fType == 'DOCX';
+      if (_selectedMatFilter == 'EXCEL') return ['xls', 'xlsx', 'csv'].contains(ext) || fType == 'XLSX';
+      if (_selectedMatFilter == 'PPT') return ['ppt', 'pptx'].contains(ext) || fType == 'PPTX';
+      if (_selectedMatFilter == 'AUDIO') return ['mp3', 'm4a', 'wav'].contains(ext) || fType == 'AUDIO' || fType == 'MP3';
+      if (_selectedMatFilter == 'VIDEO') return ['mp4', 'mkv', 'mov'].contains(ext) || fType == 'VIDEO' || fType == 'MP4';
+      if (_selectedMatFilter == 'صور') return ['jpg', 'jpeg', 'png', 'webp'].contains(ext) || fType == 'JPG';
       return true;
     }).toList();
 
@@ -436,7 +1036,7 @@ class _SubjectScreenState extends State<SubjectScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           TextField(
-            onChanged: (v) => setState(() => _searchQuery = v.trim()),
+            onChanged: (v) => setState(() => _matSearchQuery = v.trim()),
             decoration: InputDecoration(
               hintText: AppPrefs.tr('ابحث في محاضرات وملفات المادة...', 'Search subject files...'),
               prefixIcon: const Icon(Icons.search_rounded),
@@ -453,12 +1053,12 @@ class _SubjectScreenState extends State<SubjectScreen> {
               separatorBuilder: (_, __) => const SizedBox(width: 6),
               itemBuilder: (_, i) {
                 final f = filters[i];
-                final sel = _selectedFilter == f;
+                final sel = _selectedMatFilter == f;
                 return ChoiceChip(
                   label: Text(f, style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: sel ? Colors.white : null)),
                   selected: sel,
                   selectedColor: accent,
-                  onSelected: (_) => setState(() => _selectedFilter = f),
+                  onSelected: (_) => setState(() => _selectedMatFilter = f),
                 );
               },
             ),
@@ -635,158 +1235,551 @@ class _SubjectScreenState extends State<SubjectScreen> {
     );
   }
 
-  Widget _buildQuestionsTab(Color cardBg, Color accent) {
-    if (_questions.isEmpty) {
-      return Center(
-        child: Text(
-          AppPrefs.tr('لا توجد أسئلة مضافة في بنك هذه المادة بعد.', 'No questions in this subject bank yet.'),
-          style: const TextStyle(color: Colors.grey),
-        ),
-      );
-    }
+  /// =========================================================================
+  /// التبويب الثالث: نقاط الضعف والإحصاء
+  /// =========================================================================
+  Widget _buildWeaknessAndStatsTab(Color cardBg, Color accent) {
+    final total = _questions.length;
+    int mastered = 0;
+    int correct = 0;
+    int weak = 0;
+    int untouched = 0;
 
-    int score = 0;
-    if (_quizSubmitted) {
-      for (final q in _questions) {
-        final qid = q['id'];
-        if (_selectedAnswers[qid] == (q['correct_index'] ?? 0)) {
-          score++;
-        }
+    final List<Map<String, dynamic>> weakQuestions = [];
+
+    for (final raw in _questions) {
+      final q = Map<String, dynamic>.from(raw);
+      final key = (q['id'] ?? q['question_text']).toString();
+      final st = _questionStatus[key] ?? 'new';
+      if (st == 'mastered') {
+        mastered++;
+      } else if (st == 'correct') {
+        correct++;
+      } else if (st == 'weak' || st == 'wrong') {
+        weak++;
+        weakQuestions.add(q);
+      } else {
+        untouched++;
       }
     }
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (_quizSubmitted)
-          Container(
-            margin: const EdgeInsets.only(bottom: 14),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.teal.withOpacity(0.16),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.teal),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Card(
+          color: cardBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'النتيجة: $score من ${_questions.length}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.teal),
+                  AppPrefs.tr('ملخص الأداء والإحصاء في المادة', 'Performance & Statistics Summary'),
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15.5, color: accent),
                 ),
-                TextButton.icon(
-                  icon: const Icon(Icons.replay_rounded),
-                  label: const Text('إعادة المحاولة'),
-                  onPressed: () {
-                    setState(() {
-                      _selectedAnswers.clear();
-                      _quizSubmitted = false;
-                    });
-                  },
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(child: _statTile(AppPrefs.tr('إجمالي الأسئلة', 'Total'), '$total', Colors.blueAccent)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _statTile(AppPrefs.tr('متقن', 'Mastered'), '$mastered', Colors.green)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: _statTile(AppPrefs.tr('إجابات صحيحة', 'Correct'), '$correct', Colors.teal)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _statTile(AppPrefs.tr('نقاط الضعف', 'Weak'), '$weak', Colors.redAccent)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: _statTile(AppPrefs.tr('أسئلة جديدة لم تُحل', 'Unanswered'), '$untouched', Colors.grey)),
+                  ],
                 ),
               ],
             ),
           ),
-        ...List.generate(_questions.length, (idx) {
-          final q = Map<String, dynamic>.from(_questions[idx]);
-          final qid = q['id'];
-          final qKey = qid.toString();
-          final isFav = _favQuestionIds.contains(qKey);
-          final List<dynamic> opts = q['options'] is String ? jsonDecode(q['options']) : (q['options'] ?? []);
-          final int correctIdx = q['correct_index'] ?? 0;
-          final int? chosenIdx = _selectedAnswers[qid];
-          final explanation = (q['explanation'] ?? '').toString().trim();
+        ),
+        const SizedBox(height: 16),
+        if (weakQuestions.isNotEmpty) ...[
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${AppPrefs.tr('الأسئلة التي تحتاج مراجعة', 'Weak Questions to Review')} (${weakQuestions.length})',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              FilledButton.tonalIcon(
+                icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                label: Text(AppPrefs.tr('تدريب عليها الآن', 'Practice Weak')),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => _SubjectStudySessionScreen(
+                        subjectName: _subjectName,
+                        mode: 'interactive',
+                        questions: weakQuestions,
+                        accentColor: accent,
+                        onQuestionEvaluated: (qKey, isCorrect) => _recordQuestionAttempt(qKey, isCorrect),
+                        onToggleMastered: (qKey, m) => _markQuestionMastered(qKey, m),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ...weakQuestions.map((q) {
+            final qKey = (q['id'] ?? q['question_text']).toString();
+            final List<dynamic> opts = q['options'] is String ? jsonDecode(q['options']) : (q['options'] ?? []);
+            final int cIdx = q['correct_index'] ?? 0;
+            final ans = (cIdx >= 0 && cIdx < opts.length) ? opts[cIdx].toString() : '';
 
-          return Card(
-            color: cardBg,
-            margin: const EdgeInsets.only(bottom: 12),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppPrefs.cardRadius)),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            return Card(
+              color: cardBg,
+              margin: const EdgeInsets.only(bottom: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: BorderSide(color: Colors.redAccent.withOpacity(0.35)),
+              ),
+              child: ListTile(
+                title: Text((q['question_text'] ?? '').toString(), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5)),
+                subtitle: Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text('✅ $ans', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12.5)),
+                ),
+                trailing: IconButton(
+                  tooltip: AppPrefs.tr('تحديد كمتقن', 'Mark Mastered'),
+                  icon: const Icon(Icons.check_circle_outline_rounded, color: Colors.green),
+                  onPressed: () => _markQuestionMastered(qKey, true),
+                ),
+              ),
+            );
+          }),
+        ] else
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 32),
+            child: Center(
+              child: Text(
+                AppPrefs.tr('لا توجد نقاط ضعف مسجلة حالياً! استمر في التدريب 💪', 'No weak questions recorded yet! Keep practicing 💪'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey, fontSize: 14),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _statTile(String label, String val, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withOpacity(0.35)),
+      ),
+      child: Column(
+        children: [
+          Text(val, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 4),
+          Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+}
+
+/// ============================================================================
+/// شاشة جلسات التدريب الأربعة:
+/// 1. البطاقات السريعة (flashcards)
+/// 2. التدريب التفاعلي (interactive)
+/// 3. الاختبار المحاكي بمؤقت زمني (mock_exam)
+/// 4. وضع الحفظ (memorize)
+/// ============================================================================
+class _SubjectStudySessionScreen extends StatefulWidget {
+  final String subjectName;
+  final String mode;
+  final List<Map<String, dynamic>> questions;
+  final Color accentColor;
+  final Future<void> Function(String qKey, bool isCorrect) onQuestionEvaluated;
+  final Future<void> Function(String qKey, bool mastered) onToggleMastered;
+
+  const _SubjectStudySessionScreen({
+    required this.subjectName,
+    required this.mode,
+    required this.questions,
+    required this.accentColor,
+    required this.onQuestionEvaluated,
+    required this.onToggleMastered,
+  });
+
+  @override
+  State<_SubjectStudySessionScreen> createState() => _SubjectStudySessionScreenState();
+}
+
+class _SubjectStudySessionScreenState extends State<_SubjectStudySessionScreen> {
+  late List<Map<String, dynamic>> _sessionQuestions;
+  int _currentIndex = 0;
+  bool _cardFlipped = false;
+  int? _chosenOption;
+  int _score = 0;
+  bool _finished = false;
+
+  Timer? _examTimer;
+  int _secondsLeft = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _sessionQuestions = List<Map<String, dynamic>>.from(widget.questions);
+    if (widget.mode == 'mock_exam') {
+      _sessionQuestions.shuffle();
+      if (_sessionQuestions.length > 20) {
+        _sessionQuestions = _sessionQuestions.take(20).toList();
+      }
+      _secondsLeft = _sessionQuestions.length * 45;
+      _examTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        if (_secondsLeft <= 1) {
+          _examTimer?.cancel();
+          setState(() {
+            _secondsLeft = 0;
+            _finished = true;
+          });
+        } else {
+          setState(() => _secondsLeft--);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _examTimer?.cancel();
+    super.dispose();
+  }
+
+  String get _modeTitle {
+    switch (widget.mode) {
+      case 'flashcards':
+        return AppPrefs.tr('البطاقات السريعة', 'Flashcards');
+      case 'mock_exam':
+        return AppPrefs.tr('الاختبار المحاكي', 'Mock Exam');
+      case 'memorize':
+        return AppPrefs.tr('وضع الحفظ', 'Memorization Mode');
+      default:
+        return AppPrefs.tr('التدريب التفاعلي', 'Interactive Quiz');
+    }
+  }
+
+  String _formatTime(int sec) {
+    final m = (sec ~/ 60).toString().padLeft(2, '0');
+    final s = (sec % 60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  void _nextItem() {
+    if (_currentIndex + 1 >= _sessionQuestions.length) {
+      _examTimer?.cancel();
+      setState(() => _finished = true);
+    } else {
+      setState(() {
+        _currentIndex++;
+        _cardFlipped = false;
+        _chosenOption = null;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = Theme.of(context).cardColor;
+    final accent = widget.accentColor;
+
+    if (_finished) {
+      final total = _sessionQuestions.length;
+      final pct = total > 0 ? ((_score / total) * 100).round() : 0;
+      return Scaffold(
+        appBar: AppBar(title: Text(_modeTitle)),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Card(
+              color: cardBg,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.emoji_events_rounded, size: 64, color: accent),
+                    const SizedBox(height: 14),
+                    Text(AppPrefs.tr('اكتملت الجلسة التدريبية!', 'Session Completed!'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 10),
+                    Text(
+                      '${AppPrefs.tr('النتيجة:', 'Score:')} $_score / $total ($pct%)',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: accent),
+                    ),
+                    const SizedBox(height: 22),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.white),
+                        onPressed: () => Navigator.pop(context),
+                        child: Text(AppPrefs.tr('العودة للمادة', 'Back to Subject'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final q = _sessionQuestions[_currentIndex];
+    final qKey = (q['id'] ?? q['question_text']).toString();
+    final List<dynamic> opts = q['options'] is String ? jsonDecode(q['options']) : (q['options'] ?? []);
+    final int correctIdx = q['correct_index'] ?? 0;
+    final String correctAnswer = (correctIdx >= 0 && correctIdx < opts.length) ? opts[correctIdx].toString() : '';
+    final String explanation = (q['explanation'] ?? '').toString().trim();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('$_modeTitle (${_currentIndex + 1}/${_sessionQuestions.length})', style: const TextStyle(fontSize: 16)),
+        actions: [
+          if (widget.mode == 'mock_exam')
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Chip(
+                  backgroundColor: Colors.redAccent.withOpacity(0.16),
+                  label: Text(_formatTime(_secondsLeft), style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            LinearProgressIndicator(
+              value: (_currentIndex + 1) / _sessionQuestions.length,
+              color: accent,
+              minHeight: 6,
+            ),
+            const SizedBox(height: 16),
+            Expanded(
+              child: widget.mode == 'flashcards'
+                  ? _buildFlashcardBody(cardBg, accent, q, qKey, correctAnswer, explanation)
+                  : _buildQuizOrMemorizeBody(cardBg, accent, q, qKey, opts, correctIdx, explanation),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFlashcardBody(
+    Color cardBg,
+    Color accent,
+    Map<String, dynamic> q,
+    String qKey,
+    String correctAnswer,
+    String explanation,
+  ) {
+    return Column(
+      children: [
+        Expanded(
+          child: GestureDetector(
+            onTap: () => setState(() => _cardFlipped = !_cardFlipped),
+            child: Card(
+              color: cardBg,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(22),
+                side: BorderSide(color: accent.withOpacity(0.45), width: 1.5),
+              ),
+              child: Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Expanded(
-                        child: Text(
-                          '${idx + 1}. ${q['question_text'] ?? ''}',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, height: 1.4),
+                      Chip(
+                        backgroundColor: accent.withOpacity(0.15),
+                        label: Text(
+                          _cardFlipped ? AppPrefs.tr('الإجابة', 'Answer') : AppPrefs.tr('السؤال (اضغط لقلب البطاقة)', 'Question (Tap to flip)'),
+                          style: TextStyle(color: accent, fontWeight: FontWeight.bold, fontSize: 12),
                         ),
                       ),
-                      IconButton(
-                        icon: Icon(
-                          isFav ? Icons.star_rounded : Icons.star_border_rounded,
-                          color: isFav ? Colors.amber : Colors.grey,
+                      const SizedBox(height: 18),
+                      Text(
+                        _cardFlipped ? '✅ $correctAnswer' : (q['question_text'] ?? '').toString(),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: _cardFlipped ? 19 : 17,
+                          fontWeight: FontWeight.bold,
+                          color: _cardFlipped ? Colors.green : null,
+                          height: 1.5,
                         ),
-                        onPressed: () => _toggleFavQuestion(qKey),
                       ),
+                      if (_cardFlipped && explanation.isNotEmpty) ...[
+                        const Divider(height: 28),
+                        Text('💡 $explanation', textAlign: TextAlign.center, style: const TextStyle(fontSize: 13.5, color: Colors.grey)),
+                      ],
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  ...List.generate(opts.length, (oIdx) {
-                    final isSelected = chosenIdx == oIdx;
-                    final isRight = oIdx == correctIdx;
-                    Color? tileColor;
-                    if (_quizSubmitted) {
-                      if (isRight) {
-                        tileColor = Colors.green.withOpacity(0.18);
-                      } else if (isSelected && !isRight) {
-                        tileColor = Colors.redAccent.withOpacity(0.18);
-                      }
-                    } else if (isSelected) {
-                      tileColor = accent.withOpacity(0.16);
-                    }
-
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      decoration: BoxDecoration(
-                        color: tileColor,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: _quizSubmitted && isRight
-                              ? Colors.green
-                              : (isSelected ? accent : Colors.grey.withOpacity(0.25)),
-                        ),
-                      ),
-                      child: RadioListTile<int>(
-                        dense: true,
-                        value: oIdx,
-                        groupValue: chosenIdx,
-                        activeColor: accent,
-                        title: Text(opts[oIdx].toString(), style: const TextStyle(fontSize: 13.5)),
-                        onChanged: _quizSubmitted
-                            ? null
-                            : (val) => setState(() => _selectedAnswers[qid] = val!),
-                      ),
-                    );
-                  }),
-                  if (_quizSubmitted && explanation.isNotEmpty)
-                    Container(
-                      width: double.infinity,
-                      margin: const EdgeInsets.only(top: 6),
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text('💡 التوضيح: $explanation', style: const TextStyle(fontSize: 12.5)),
-                    ),
-                ],
+                ),
               ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (!_cardFlipped)
+          SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.white),
+              icon: const Icon(Icons.flip_rounded),
+              label: Text(AppPrefs.tr('إظهار الإجابة', 'Show Answer'), style: const TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: () => setState(() => _cardFlipped = true),
+            ),
+          )
+        else
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14)),
+                  icon: const Icon(Icons.close_rounded),
+                  label: Text(AppPrefs.tr('لم أتذكرها (ضعيف)', 'Forgot (Weak)'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () async {
+                    await widget.onToggleMastered(qKey, false);
+                    _nextItem();
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14)),
+                  icon: const Icon(Icons.check_rounded),
+                  label: Text(AppPrefs.tr('تذكرتها (متقن)', 'Recalled (Mastered)'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () async {
+                    _score++;
+                    await widget.onToggleMastered(qKey, true);
+                    _nextItem();
+                  },
+                ),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildQuizOrMemorizeBody(
+    Color cardBg,
+    Color accent,
+    Map<String, dynamic> q,
+    String qKey,
+    List<dynamic> opts,
+    int correctIdx,
+    String explanation,
+  ) {
+    final isMemorize = widget.mode == 'memorize';
+
+    return ListView(
+      children: [
+        Card(
+          color: cardBg,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Text(
+              (q['question_text'] ?? '').toString(),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, height: 1.5),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ...List.generate(opts.length, (oIdx) {
+          final isRight = oIdx == correctIdx;
+          final isChosen = _chosenOption == oIdx;
+          final reveal = isMemorize || _chosenOption != null;
+
+          Color? bg;
+          if (reveal) {
+            if (isRight) {
+              bg = Colors.green.withOpacity(0.18);
+            } else if (isChosen) {
+              bg = Colors.redAccent.withOpacity(0.18);
+            }
+          }
+
+          return Card(
+            color: bg ?? cardBg,
+            margin: const EdgeInsets.only(bottom: 8),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(
+                color: reveal && isRight ? Colors.green : (isChosen ? Colors.redAccent : Colors.grey.withOpacity(0.25)),
+              ),
+            ),
+            child: ListTile(
+              title: Text(opts[oIdx].toString(), style: const TextStyle(fontWeight: FontWeight.w600)),
+              trailing: reveal && isRight ? const Icon(Icons.check_circle_rounded, color: Colors.green) : null,
+              onTap: (isMemorize || _chosenOption != null)
+                  ? null
+                  : () async {
+                      final right = oIdx == correctIdx;
+                      setState(() {
+                        _chosenOption = oIdx;
+                        if (right) _score++;
+                      });
+                      await widget.onQuestionEvaluated(qKey, right);
+                    },
             ),
           );
         }),
-        const SizedBox(height: 8),
-        if (!_quizSubmitted)
+        if ((isMemorize || _chosenOption != null) && explanation.isNotEmpty)
+          Container(
+            margin: const EdgeInsets.only(top: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.amber.withOpacity(0.14),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text('💡 $explanation', style: const TextStyle(fontSize: 13)),
+          ),
+        const SizedBox(height: 16),
+        if (isMemorize || _chosenOption != null)
           SizedBox(
             height: 48,
             child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.white),
-              icon: const Icon(Icons.check_circle_rounded),
-              label: const Text('تصحيح الإجابات وعرض النتيجة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-              onPressed: () => setState(() => _quizSubmitted = true),
+              icon: const Icon(Icons.arrow_forward_rounded),
+              label: Text(
+                _currentIndex + 1 >= _sessionQuestions.length
+                    ? AppPrefs.tr('إنهاء وعرض النتيجة', 'Finish & Show Score')
+                    : AppPrefs.tr('السؤال التالي', 'Next Question'),
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              onPressed: () {
+                if (isMemorize) _score++;
+                _nextItem();
+              },
             ),
           ),
       ],
@@ -796,8 +1789,8 @@ class _SubjectScreenState extends State<SubjectScreen> {
 
 /// ============================================================================
 /// عارض المستندات المتكامل شبيه تطبيق WPS Office
-/// - يدعم تكبير وتصغير تلقائي بالأصابع (InteractiveViewer) لأي نوع ملف
-/// - يستخرج صفحات/صور PDF المضمنة ويعرضها مباشرة مع إمكانية الفتح الكامل
+/// - يعرض صفحات أي ملف PDF (مصوّر أو نصي) كصفحات حقيقية عالية الدقة عبر Printing.raster
+/// - يدعم التكبير والتصغير التلقائي بالأصابع (InteractiveViewer) لأي نوع ملف
 /// ============================================================================
 class WpsStyleDocumentViewerScreen extends StatefulWidget {
   final String title;
@@ -821,7 +1814,7 @@ class WpsStyleDocumentViewerScreen extends StatefulWidget {
 
 class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScreen> {
   bool _parsing = true;
-  String _readingMode = 'paper'; // 'paper' | 'sepia' | 'night'
+  String _readingMode = 'paper';
   double _fontSize = 15.5;
   bool _showSearchBar = false;
   String _docSearchQuery = '';
@@ -831,8 +1824,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
   List<String> _paragraphs = [];
   List<List<String>> _sheetRows = [];
   List<Map<String, dynamic>> _slides = [];
-  List<Uint8List> _pdfEmbeddedImages = [];
-  int _estimatedPdfPages = 0;
+  List<Uint8List> _renderedPdfPages = [];
   String _fileSizeLabel = '';
   String _docCategory = 'DOC';
 
@@ -946,8 +1938,16 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
       } else if (ext == 'pdf') {
         _docCategory = 'PDF';
         _paragraphs = _extractPdfReadableText(bytes);
-        _pdfEmbeddedImages = _extractPdfImages(bytes);
-        _estimatedPdfPages = _countPdfPages(bytes);
+        // رسم صفحات ملف PDF الفعلية عالية الدقة عبر محرك Printing.raster
+        try {
+          final List<Uint8List> pagePngs = [];
+          await for (final rasterPage in Printing.raster(bytes, dpi: 144)) {
+            final pngBytes = await rasterPage.toPng();
+            pagePngs.add(pngBytes);
+            if (pagePngs.length >= 40) break;
+          }
+          _renderedPdfPages = pagePngs;
+        } catch (_) {}
       } else {
         _docCategory = 'TEXT';
         final rawText = utf8.decode(bytes, allowMalformed: true);
@@ -962,57 +1962,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
     if (mounted) {
       setState(() => _parsing = false);
     }
-  }
-
-  int _countPdfPages(Uint8List bytes) {
-    final raw = latin1.decode(bytes, allowInvalid: true);
-    final matches = RegExp(r'/Type\s*/Page\b').allMatches(raw).length;
-    return matches > 0 ? matches : 1;
-  }
-
-  /// استخراج الصور المضمنة داخل ملف PDF (مثل JPEG أو FlateDecode) لعرض صفحات PDF المصوّرة مباشرة
-  List<Uint8List> _extractPdfImages(Uint8List bytes) {
-    final List<Uint8List> images = [];
-    final rawLatin = latin1.decode(bytes, allowInvalid: true);
-
-    // 1. استخراج صور JPEG المضمنة مباشرة داخل PDF (FFD8FF ... FFD9)
-    int idx = 0;
-    while (idx < bytes.length - 4 && images.length < 30) {
-      if (bytes[idx] == 0xFF && bytes[idx + 1] == 0xD8 && bytes[idx + 2] == 0xFF) {
-        int endIdx = -1;
-        for (int j = idx + 3; j < bytes.length - 1; j++) {
-          if (bytes[j] == 0xFF && bytes[j + 1] == 0xD9) {
-            endIdx = j + 2;
-            break;
-          }
-        }
-        if (endIdx != -1 && endIdx - idx > 500) {
-          images.add(Uint8List.sublistView(bytes, idx, endIdx));
-          idx = endIdx;
-          continue;
-        }
-      }
-      idx++;
-    }
-
-    // 2. محاولة فك ضغط تدفقات الصور (DCTDecode / FlateDecode) إن لم تُلتقط صور JPEG خامة
-    if (images.isEmpty) {
-      final streamMatches = RegExp(r'stream\r?\n(.*?)\r?\nendstream', dotAll: true).allMatches(rawLatin);
-      for (final sm in streamMatches) {
-        if (images.length >= 25) break;
-        final sStr = sm.group(1);
-        if (sStr == null || sStr.length < 200) continue;
-        final sBytes = latin1.encode(sStr);
-        try {
-          final inflated = Uint8List.fromList(zlib.decode(sBytes));
-          if (inflated.length > 2000) {
-            images.add(inflated);
-          }
-        } catch (_) {}
-      }
-    }
-
-    return images;
   }
 
   String _decodeXmlEntities(String input) {
@@ -1273,7 +2222,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
               ),
             ),
 
-          // تكبير وتصغير تلقائي بالأصابع لأي مستند أيا كان نوعه
           Expanded(
             child: InteractiveViewer(
               transformationController: _zoomCtrl,
@@ -1289,7 +2237,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
                           CircularProgressIndicator(color: headerBg),
                           const SizedBox(height: 14),
                           Text(
-                            'جاري تجهيز وعرض المستند...',
+                            'جاري تجهيز وعرض صفحات المستند...',
                             style: TextStyle(color: _pageTextColor, fontWeight: FontWeight.bold),
                           ),
                         ],
@@ -1469,6 +2417,47 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
       );
     }
 
+    // عرض صفحات ملف PDF كصور صفحات حقيقية عالية الدقة
+    if (_docCategory == 'PDF' && _renderedPdfPages.isNotEmpty) {
+      return ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: _renderedPdfPages.length,
+        itemBuilder: (_, idx) {
+          return Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.12), blurRadius: 8, offset: const Offset(0, 3))],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: headerBg.withOpacity(0.12),
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
+                  ),
+                  child: Text(
+                    'صفحة ${idx + 1} من ${_renderedPdfPages.length}  •  كبّر بإصبعيك للتقريب',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: headerBg),
+                  ),
+                ),
+                ClipRRect(
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(10)),
+                  child: Image.memory(
+                    _renderedPdfPages[idx],
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    }
+
     final visibleParagraphs = _docSearchQuery.isEmpty
         ? _paragraphs
         : _paragraphs.where((p) => p.toLowerCase().contains(_docSearchQuery)).toList();
@@ -1476,7 +2465,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
     return ListView(
       padding: const EdgeInsets.all(14),
       children: [
-        if (_docCategory == 'PDF') ...[
+        if (_docCategory == 'PDF')
           Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(12),
@@ -1489,7 +2478,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '📄 ملف PDF ($_estimatedPdfPages صفحة) — يمكنك التكبير والتصغير بإصبعيك مباشرة:',
+                  '📄 خيارات عرض ملف PDF الكامل:',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5, color: _pageTextColor),
                 ),
                 const SizedBox(height: 8),
@@ -1514,34 +2503,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
               ],
             ),
           ),
-          if (_pdfEmbeddedImages.isNotEmpty)
-            ...List.generate(_pdfEmbeddedImages.length, (idx) {
-              return Container(
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: _pageBackgroundColor,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 6)],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('صفحة / لوحة ${idx + 1}', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: headerBg)),
-                    const SizedBox(height: 6),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.memory(
-                        _pdfEmbeddedImages[idx],
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }),
-        ],
 
         Container(
           padding: const EdgeInsets.all(20),
@@ -1556,9 +2517,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
                     Icon(Icons.picture_as_pdf_rounded, size: 46, color: headerBg),
                     const SizedBox(height: 10),
                     Text(
-                      _docCategory == 'PDF'
-                          ? 'تم عرض المحتوى المرئي المتاح داخل التطبيق ($_estimatedPdfPages صفحة). للعرض الكامل لكل صفحة بدقتها الأصلية استخدم زر "فتح بالعارض الكامل" بالأعلى.'
-                          : 'لا توجد نصوص قابلة للعرض المباشر في هذا الملف.',
+                      'اضغط على زر "فتح بالعارض الكامل (أوفلاين)" بالأعلى لعرض جميع صفحات المستند بدقتها الأصلية.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: _pageTextColor, fontSize: 13.5, height: 1.6),
                     ),
