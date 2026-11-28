@@ -5,13 +5,13 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:printing/printing.dart';
 import 'app_prefs.dart';
 import 'main.dart';
 import 'home_screen.dart';
@@ -1789,7 +1789,7 @@ class _SubjectStudySessionScreenState extends State<_SubjectStudySessionScreen> 
 
 /// ============================================================================
 /// عارض المستندات المتكامل شبيه تطبيق WPS Office
-/// - يعرض صفحات أي ملف PDF (مصوّر أو نصي) كصفحات حقيقية عالية الدقة عبر Printing.raster
+/// - يعرض صفحات أي ملف PDF (مصوّر أو نصي) كصفحات حقيقية عالية الدقة داخل العارض
 /// - يدعم التكبير والتصغير التلقائي بالأصابع (InteractiveViewer) لأي نوع ملف
 /// ============================================================================
 class WpsStyleDocumentViewerScreen extends StatefulWidget {
@@ -1820,6 +1820,10 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
   String _docSearchQuery = '';
   final TextEditingController _searchCtrl = TextEditingController();
   final TransformationController _zoomCtrl = TransformationController();
+  final PdfViewerController _pdfViewerCtrl = PdfViewerController();
+  final GlobalKey<SfPdfViewerState> _pdfKey = GlobalKey<SfPdfViewerState>();
+  int _pdfPageCount = 0;
+  int _pdfCurrentPage = 1;
 
   List<String> _paragraphs = [];
   List<List<String>> _sheetRows = [];
@@ -1838,6 +1842,7 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
   void dispose() {
     _searchCtrl.dispose();
     _zoomCtrl.dispose();
+    _pdfViewerCtrl.dispose();
     super.dispose();
   }
 
@@ -1937,17 +1942,6 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
             .toList();
       } else if (ext == 'pdf') {
         _docCategory = 'PDF';
-        _paragraphs = _extractPdfReadableText(bytes);
-        // رسم صفحات ملف PDF الفعلية عالية الدقة عبر محرك Printing.raster
-        try {
-          final List<Uint8List> pagePngs = [];
-          await for (final rasterPage in Printing.raster(bytes, dpi: 144)) {
-            final pngBytes = await rasterPage.toPng();
-            pagePngs.add(pngBytes);
-            if (pagePngs.length >= 40) break;
-          }
-          _renderedPdfPages = pagePngs;
-        } catch (_) {}
       } else {
         _docCategory = 'TEXT';
         final rawText = utf8.decode(bytes, allowMalformed: true);
@@ -2209,7 +2203,12 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
               child: TextField(
                 controller: _searchCtrl,
                 style: const TextStyle(color: Colors.white),
-                onChanged: (v) => setState(() => _docSearchQuery = v.trim().toLowerCase()),
+                onChanged: (v) {
+                  setState(() => _docSearchQuery = v.trim().toLowerCase());
+                  if (_docCategory == 'PDF' && v.trim().isNotEmpty) {
+                    _pdfViewerCtrl.searchText(v.trim());
+                  }
+                },
                 decoration: InputDecoration(
                   hintText: 'ابحث عن كلمة داخل المستند...',
                   hintStyle: const TextStyle(color: Colors.white70, fontSize: 13),
@@ -2417,44 +2416,89 @@ class _WpsStyleDocumentViewerScreenState extends State<WpsStyleDocumentViewerScr
       );
     }
 
-    // عرض صفحات ملف PDF كصور صفحات حقيقية عالية الدقة
-    if (_docCategory == 'PDF' && _renderedPdfPages.isNotEmpty) {
-      return ListView.builder(
-        padding: const EdgeInsets.all(12),
-        itemCount: _renderedPdfPages.length,
-        itemBuilder: (_, idx) {
-          return Container(
-            margin: const EdgeInsets.only(bottom: 14),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(10),
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.12), blurRadius: 8, offset: const Offset(0, 3))],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+    // عارض PDF حقيقي مدمج داخل التطبيق (أوفلاين من الملف المحلي أو عبر الرابط السحابي)
+    if (_docCategory == 'PDF') {
+      final hasLocalPdf = widget.localFilePath != null && !kIsWeb && File(widget.localFilePath!).existsSync();
+      return Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            color: headerBg.withOpacity(0.14),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: headerBg.withOpacity(0.12),
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
-                  ),
-                  child: Text(
-                    'صفحة ${idx + 1} من ${_renderedPdfPages.length}  •  كبّر بإصبعيك للتقريب',
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: headerBg),
-                  ),
+                Text(
+                  _pdfPageCount > 0
+                      ? 'صفحة $_pdfCurrentPage من $_pdfPageCount'
+                      : 'عارض PDF الداخلي',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _pageTextColor),
                 ),
-                ClipRRect(
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(10)),
-                  child: Image.memory(
-                    _renderedPdfPages[idx],
-                    fit: BoxFit.contain,
-                  ),
+                Row(
+                  children: [
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'تصغير',
+                      icon: const Icon(Icons.zoom_out_rounded, size: 20),
+                      onPressed: () {
+                        final next = (_pdfViewerCtrl.zoomLevel - 0.25).clamp(1.0, 4.0);
+                        _pdfViewerCtrl.zoomLevel = next;
+                      },
+                    ),
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'تكبير',
+                      icon: const Icon(Icons.zoom_in_rounded, size: 20),
+                      onPressed: () {
+                        final next = (_pdfViewerCtrl.zoomLevel + 0.25).clamp(1.0, 4.0);
+                        _pdfViewerCtrl.zoomLevel = next;
+                      },
+                    ),
+                  ],
                 ),
               ],
             ),
-          );
-        },
+          ),
+          Expanded(
+            child: hasLocalPdf
+                ? SfPdfViewer.file(
+                    File(widget.localFilePath!),
+                    key: _pdfKey,
+                    controller: _pdfViewerCtrl,
+                    canShowScrollHead: true,
+                    canShowScrollStatus: true,
+                    enableDoubleTapZooming: true,
+                    onDocumentLoaded: (details) {
+                      if (mounted) {
+                        setState(() => _pdfPageCount = details.document.pages.count);
+                      }
+                    },
+                    onPageChanged: (details) {
+                      if (mounted) {
+                        setState(() => _pdfCurrentPage = details.newPageNumber);
+                      }
+                    },
+                  )
+                : SfPdfViewer.network(
+                    widget.fileUrl,
+                    key: _pdfKey,
+                    controller: _pdfViewerCtrl,
+                    canShowScrollHead: true,
+                    canShowScrollStatus: true,
+                    enableDoubleTapZooming: true,
+                    onDocumentLoaded: (details) {
+                      if (mounted) {
+                        setState(() => _pdfPageCount = details.document.pages.count);
+                      }
+                    },
+                    onPageChanged: (details) {
+                      if (mounted) {
+                        setState(() => _pdfCurrentPage = details.newPageNumber);
+                      }
+                    },
+                  ),
+          ),
+        ],
       );
     }
 
