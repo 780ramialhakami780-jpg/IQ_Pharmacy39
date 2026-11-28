@@ -280,7 +280,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
   StreamSubscription<List<ScanResult>>? _scanSub;
 
   final Map<String, RadarStudentRecord> _sessionRecords = {};
-  List> _sectionRoster = [];
+  List<Map<String, String>> _sectionRoster = [];
   bool _isUploading = false;
   String? _lastScannedQrId;
 
@@ -368,7 +368,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
           .select('student_id, full_name, gender')
           .eq('gender', _adminGender)
           .order('full_name');
-      final List> fresh = [];
+      final List<Map<String, String>> fresh = [];
       for (final r in rows) {
         final id = (r['student_id'] ?? '').toString().trim();
         final name = (r['full_name'] ?? '').toString().trim();
@@ -730,7 +730,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
         for (final r in existingRows) (r['student_id'] ?? '').toString(): r['id']
       };
 
-      final List> toInsert = [];
+      final List<Map<String, dynamic>> toInsert = [];
       for (final rec in _sessionRecords.values) {
         final sid = rec['student_id']!;
         if (existingBySid.containsKey(sid)) {
