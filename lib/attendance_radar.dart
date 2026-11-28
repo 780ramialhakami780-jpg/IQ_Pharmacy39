@@ -106,6 +106,7 @@ class CourseCatalog {
     return null;
   }
 
+  /// نافذة تحضير النظري: تبدأ بعد 30 دقيقة من بداية المحاضرة وتنتهي قبل نهايتها بـ 30 دقيقة
   static Map<String, dynamic> evaluateTheoryWindow(CourseCatalogItem? item) {
     final now = DateTime.now();
     final startH = item?.startHour24 ?? 8;
@@ -164,15 +165,6 @@ class RadarCrypto {
 }
 
 class BleSafeHelper {
-  static Future<bool> isLocationServiceEnabledSafe() async {
-    if (kIsWeb) return false;
-    try {
-      return await Permission.locationWhenInUse.serviceStatus.isEnabled;
-    } catch (_) {
-      return true;
-    }
-  }
-
   static Future<bool> prepareBluetooth({bool promptTurnOn = false}) async {
     if (kIsWeb) return false;
     try {
@@ -198,14 +190,14 @@ class BleSafeHelper {
       if (!scanGranted) return false;
 
       var state = await FlutterBluePlus.adapterState.first
-          .timeout(const Duration(seconds: 3), onTimeout: () => BluetoothAdapterState.unknown);
+          .timeout(const Duration(seconds: 2), onTimeout: () => BluetoothAdapterState.unknown);
 
       if (state != BluetoothAdapterState.on && promptTurnOn) {
         try {
           await FlutterBluePlus.turnOn();
           await Future.delayed(const Duration(milliseconds: 900));
           state = await FlutterBluePlus.adapterState.first
-              .timeout(const Duration(seconds: 3), onTimeout: () => BluetoothAdapterState.unknown);
+              .timeout(const Duration(seconds: 2), onTimeout: () => BluetoothAdapterState.unknown);
         } catch (_) {}
       }
 
@@ -224,14 +216,14 @@ class BleSafeHelper {
     } catch (_) {}
   }
 
-  static Uint8List safeAsciiBytes(String text, {int maxBytes = 14}) {
+  static Uint8List safeAsciiBytes(String text, {int maxBytes = 20}) {
     final clean = text.replaceAll(RegExp(r'[^\x20-\x7E]'), '');
     final bytes = utf8.encode(clean);
     if (bytes.length <= maxBytes) return Uint8List.fromList(bytes);
     return Uint8List.fromList(bytes.sublist(0, maxBytes));
   }
 
-  static Uint8List safeUtf8Bytes(String text, {int maxBytes = 20}) {
+  static Uint8List safeUtf8Bytes(String text, {int maxBytes = 22}) {
     final bytes = utf8.encode(text);
     if (bytes.length <= maxBytes) return Uint8List.fromList(bytes);
     return Uint8List.fromList(bytes.sublist(0, maxBytes));
@@ -272,13 +264,13 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
   String _activePin = '----';
   int _pinSecondsLeft = 10;
   bool _bleAdvertising = false;
-  String _radarStatusNote = '';
   String _adminGender = 'male';
 
   Timer? _mainTimer;
   Timer? _cloudSyncTimer;
   StreamSubscription<List<ScanResult>>? _scanSub;
 
+  // status: 'present' | 'absent' | 'excused'
   final Map<String, RadarStudentRecord> _sessionRecords = {};
   List<Map<String, String>> _sectionRoster = [];
   bool _isUploading = false;
@@ -331,6 +323,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // عند العودة من خروج مؤقت أثناء تشغيل التحضير: نُبقي كل البيانات والعدّاد ونعيد تنشيط البلوتوث والمزامنة تلقائياً
     if (state == AppLifecycleState.resumed && _isRadarActive && !_isPaused) {
       _pullUnifiedAttendanceFromCloud();
       _startRadarHardware();
@@ -421,6 +414,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
           ? (win['winEnd'] as DateTime)
           : DateTime.now().add(const Duration(minutes: 60));
     } else {
+      // العملي: بدء اختياري لمدة ربع ساعة (15 دقيقة)
       endsAt = DateTime.now().add(const Duration(minutes: 15));
     }
 
@@ -435,7 +429,6 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
       _remainingSeconds = remSec;
       _activePin = RadarCrypto.currentPin(sessionLabel);
       _pinSecondsLeft = RadarCrypto.secondsRemainingInSlot();
-      _radarStatusNote = '';
     });
 
     await _upsertUnifiedSessionState(isActive: true, isPaused: false, endsAt: endsAt);
@@ -470,44 +463,55 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
 
   Future<void> _startRadarHardware() async {
     final sessionLabel = _fullSessionLabel;
-    final locEnabled = await BleSafeHelper.isLocationServiceEnabledSafe();
     final btReady = await BleSafeHelper.prepareBluetooth(promptTurnOn: true);
-
     if (!btReady) {
-      if (mounted) {
-        setState(() {
-          _bleAdvertising = false;
-          _radarStatusNote = 'تأكد من تشغيل البلوتوث ومنح أذونات الأجهزة القريبة والموقع.';
-        });
-      }
+      if (mounted) setState(() => _bleAdvertising = false);
       return;
     }
 
-    bool advertisedOk = false;
     try {
       final supported = await _peripheral.isSupported;
       if (supported) {
         try {
           await _peripheral.stop();
         } catch (_) {}
-        final shortToken = sessionLabel.hashCode.abs() % 99999;
+        final token = (sessionLabel.hashCode.abs() % 89999) + 10000;
         final advData = AdvertiseData(
           includeDeviceName: false,
           manufacturerId: _attManufacturerId,
-          manufacturerData: BleSafeHelper.safeAsciiBytes('ADM$shortToken', maxBytes: 12),
+          manufacturerData: BleSafeHelper.safeAsciiBytes('ADM|$token', maxBytes: 12),
         );
-        await _peripheral.start(advertiseData: advData);
-        advertisedOk = true;
+        await _peripheral.start(
+          advertiseData: advData,
+          advertiseSettings: AdvertiseSettings(
+            advertiseMode: AdvertiseMode.advertiseModeLowLatency,
+            txPowerLevel: AdvertiseTxPower.advertiseTxPowerHigh,
+            connectable: false,
+          ),
+        );
+        if (mounted) setState(() => _bleAdvertising = true);
       }
     } catch (_) {
-      advertisedOk = false;
+      // محاولة البث بالإعدادات الافتراضية في حال عدم دعم AdvertiseSettings على الجهاز
+      try {
+        final token = (sessionLabel.hashCode.abs() % 89999) + 10000;
+        await _peripheral.start(
+          advertiseData: AdvertiseData(
+            includeDeviceName: false,
+            manufacturerId: _attManufacturerId,
+            manufacturerData: BleSafeHelper.safeAsciiBytes('ADM|$token', maxBytes: 12),
+          ),
+        );
+        if (mounted) setState(() => _bleAdvertising = true);
+      } catch (_) {}
     }
 
-    bool scanStartedOk = false;
     try {
       await FlutterBluePlus.stopScan();
-      await FlutterBluePlus.startScan(continuousUpdates: true);
-      scanStartedOk = true;
+      await FlutterBluePlus.startScan(
+        androidScanMode: AndroidScanMode.lowLatency,
+        continuousUpdates: true,
+      );
       _scanSub?.cancel();
       _scanSub = FlutterBluePlus.scanResults.listen((results) {
         if (_isPaused || !_isRadarActive) return;
@@ -529,22 +533,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
           }
         }
       });
-    } catch (_) {
-      scanStartedOk = false;
-    }
-
-    if (mounted) {
-      setState(() {
-        _bleAdvertising = advertisedOk || scanStartedOk;
-        if (!locEnabled) {
-          _radarStatusNote = 'تنبيه: يُنصح بتفعيل خدمة الموقع (Location) لتحسين التقاط أجهزة البلوتوث على أندرويد.';
-        } else if (!advertisedOk && scanStartedOk) {
-          _radarStatusNote = 'الرادار يلتقط الطلاب عبر المسح؛ يمكن للطلاب أيضاً التحضير بالكود المتغير أو QR.';
-        } else {
-          _radarStatusNote = '';
-        }
-      });
-    }
+    } catch (_) {}
   }
 
   Future<void> _stopRadarHardwareOnly() async {
@@ -709,6 +698,7 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
     final sessionLabel = _fullSessionLabel;
 
     try {
+      // تأكد من تسجيل غير المحضّرين كـ مغيبين إن لم يكن لديهم حالة مسجلة
       for (final st in _sectionRoster) {
         final sid = st['student_id']!;
         if (!_sessionRecords.containsKey(sid)) {
@@ -878,240 +868,240 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
         }
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text('رادار التحضير الموحد (نظري / عملي)'),
-          bottom: _isRadarActive
-              ? TabBar(
-                  controller: _tabController,
-                  indicatorColor: accent,
-                  labelColor: isDark ? Colors.white : Colors.black,
-                  tabs: [
-                    Tab(icon: const Icon(Icons.radar_rounded, size: 18), text: 'الرادار (${stats['present']})'),
-                    const Tab(icon: Icon(Icons.qr_code_scanner_rounded, size: 18), text: 'مسح QR'),
-                    Tab(icon: const Icon(Icons.fact_check_rounded, size: 18), text: 'كشف الدفعة (${stats['total']})'),
-                  ],
-                )
-              : null,
-        ),
-        body: _isRadarActive
-            ? TabBarView(
+      appBar: AppBar(
+        title: const Text('رادار التحضير الموحد (نظري / عملي)'),
+        bottom: _isRadarActive
+            ? TabBar(
                 controller: _tabController,
-                children: [
-                  _buildActiveRadarTab(cardBg, accent, stats),
-                  _buildQrScannerTab(cardBg, accent),
-                  _buildFullRosterTab(cardBg, accent, isDark),
+                indicatorColor: accent,
+                labelColor: isDark ? Colors.white : Colors.black,
+                tabs: [
+                  Tab(icon: const Icon(Icons.radar_rounded, size: 18), text: 'الرادار (${stats['present']})'),
+                  const Tab(icon: Icon(Icons.qr_code_scanner_rounded, size: 18), text: 'مسح QR'),
+                  Tab(icon: const Icon(Icons.fact_check_rounded, size: 18), text: 'كشف الدفعة (${stats['total']})'),
                 ],
               )
-            : ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  if (_sessionFinished) ...[
-                    _buildFinalStatsCard(cardBg, accent, stats),
-                    const SizedBox(height: 16),
-                  ],
-                  Card(
-                    color: cardBg,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('إعداد جلسة التحضير الموحدة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                              Chip(
-                                label: Text(_adminGender == 'female' ? 'شطر الطالبات' : 'شطر الطلاب', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                                backgroundColor: accent.withOpacity(0.15),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          if (!_useCustomCode)
-                            DropdownButtonFormField<String>(
-                              value: _selectedCourseCode,
-                              isExpanded: true,
-                              decoration: const InputDecoration(
-                                labelText: 'كود واسم المقرر',
-                                border: OutlineInputBorder(),
-                              ),
-                              items: CourseCatalog.courses
-                                  .map((c) => DropdownMenuItem(
-                                        value: c.code,
-                                        child: Text(c.displayLabel(_lectureType), overflow: TextOverflow.ellipsis),
-                                      ))
-                                  .toList(),
-                              onChanged: (v) {
-                                if (v != null) setState(() => _selectedCourseCode = v);
-                              },
-                            )
-                          else
-                            TextField(
-                              controller: _customCodeCtrl,
-                              onChanged: (_) => setState(() {}),
-                              decoration: const InputDecoration(
-                                labelText: 'اكتب كود المقرر (مثلاً: PHAR-201)',
-                                border: OutlineInputBorder(),
-                              ),
+            : null,
+      ),
+      body: _isRadarActive
+          ? TabBarView(
+              controller: _tabController,
+              children: [
+                _buildActiveRadarTab(cardBg, accent, stats),
+                _buildQrScannerTab(cardBg, accent),
+                _buildFullRosterTab(cardBg, accent, isDark),
+              ],
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                if (_sessionFinished) ...[
+                  _buildFinalStatsCard(cardBg, accent, stats),
+                  const SizedBox(height: 16),
+                ],
+                Card(
+                  color: cardBg,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('إعداد جلسة التحضير الموحدة', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                            Chip(
+                              label: Text(_adminGender == 'female' ? 'شطر الطالبات' : 'شطر الطلاب', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                              backgroundColor: accent.withOpacity(0.15),
                             ),
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: TextButton.icon(
-                              icon: Icon(_useCustomCode ? Icons.list_alt_rounded : Icons.edit_rounded, size: 16),
-                              label: Text(_useCustomCode ? 'الاختيار من قائمة المقررات المعتمدة' : 'إدخال كود مقرر مخصص'),
-                              onPressed: () => setState(() => _useCustomCode = !_useCustomCode),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        if (!_useCustomCode)
+                          DropdownButtonFormField<String>(
+                            value: _selectedCourseCode,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: 'كود واسم المقرر',
+                              border: OutlineInputBorder(),
                             ),
-                          ),
+                            items: CourseCatalog.courses
+                                .map((c) => DropdownMenuItem(
+                                      value: c.code,
+                                      child: Text(c.displayLabel(_lectureType), overflow: TextOverflow.ellipsis),
+                                    ))
+                                .toList(),
+                            onChanged: (v) {
+                              if (v != null) setState(() => _selectedCourseCode = v);
+                            },
+                          )
+                        else
                           TextField(
-                            controller: _lectureNumCtrl,
-                            keyboardType: TextInputType.number,
+                            controller: _customCodeCtrl,
                             onChanged: (_) => setState(() {}),
                             decoration: const InputDecoration(
-                              labelText: 'رقم المحاضرة (مثال: 1، 2، 3...)',
-                              prefixIcon: Icon(Icons.format_list_numbered_rtl_rounded),
+                              labelText: 'اكتب كود المقرر (مثلاً: PHAR-201)',
                               border: OutlineInputBorder(),
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          const Text('نوع المحاضرة:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ChoiceChip(
-                                  label: Center(
-                                    child: Text(
-                                      'محاضرة نظري (الدفعة)',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: _lectureType == 'نظري' ? Colors.black : null,
-                                      ),
-                                    ),
-                                  ),
-                                  selectedColor: accent,
-                                  selected: _lectureType == 'نظري',
-                                  onSelected: (_) => setState(() => _lectureType = 'نظري'),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: ChoiceChip(
-                                  label: Center(
-                                    child: Text(
-                                      'معمل عملي (15 دقيقة)',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: _lectureType == 'عملي' ? Colors.black : null,
-                                      ),
-                                    ),
-                                  ),
-                                  selectedColor: accent,
-                                  selected: _lectureType == 'عملي',
-                                  onSelected: (_) => setState(() => _lectureType = 'عملي'),
-                                ),
-                              ),
-                            ],
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            icon: Icon(_useCustomCode ? Icons.list_alt_rounded : Icons.edit_rounded, size: 16),
+                            label: Text(_useCustomCode ? 'الاختيار من قائمة المقررات المعتمدة' : 'إدخال كود مقرر مخصص'),
+                            onPressed: () => setState(() => _useCustomCode = !_useCustomCode),
                           ),
-                          if (_lectureType == 'نظري') ...[
-                            const SizedBox(height: 10),
-                            Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: (theoryWin['inWindow'] == true ? Colors.green : Colors.orange).withOpacity(0.12),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: theoryWin['inWindow'] == true ? Colors.green : Colors.orange),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '⏱️ نافذة التحضير التلقائية للمقرر: (${theoryWin['windowLabel']})',
-                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  const Text(
-                                    'تبدأ بعد مرور نصف ساعة من بداية المحاضرة وتنتهي قبل نهايتها بنصف ساعة.',
-                                    style: TextStyle(fontSize: 11, color: Colors.grey),
-                                  ),
-                                  if (theoryWin['inWindow'] != true)
-                                    SwitchListTile(
-                                      dense: true,
-                                      contentPadding: EdgeInsets.zero,
-                                      title: const Text('تجاوز الوقت (فتح استثنائي للمحاضرة الآن)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                                      value: _overrideTheoryWindow,
-                                      onChanged: (v) => setState(() => _overrideTheoryWindow = v),
+                        ),
+                        TextField(
+                          controller: _lectureNumCtrl,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(
+                            labelText: 'رقم المحاضرة (مثال: 1، 2، 3...)',
+                            prefixIcon: Icon(Icons.format_list_numbered_rtl_rounded),
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text('نوع المحاضرة:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ChoiceChip(
+                                label: Center(
+                                  child: Text(
+                                    'محاضرة نظري (الدفعة)',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _lectureType == 'نظري' ? Colors.black : null,
                                     ),
-                                ],
+                                  ),
+                                ),
+                                selectedColor: accent,
+                                selected: _lectureType == 'نظري',
+                                onSelected: (_) => setState(() => _lectureType = 'نظري'),
                               ),
                             ),
-                          ] else ...[
-                            const SizedBox(height: 12),
-                            const Text('تحديد مجموعة العملي (بدء اختياري لمدة 15 دقيقة):', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 6),
-                            Row(
-                              children: _practicalGroups.map((grp) {
-                                final sel = _selectedGroup == grp;
-                                return Expanded(
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 3),
-                                    child: ChoiceChip(
-                                      selectedColor: accent,
-                                      label: Center(
-                                        child: Text(
-                                          grp,
-                                          style: TextStyle(
-                                            fontSize: 11.5,
-                                            fontWeight: FontWeight.bold,
-                                            color: sel ? Colors.black : null,
-                                          ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ChoiceChip(
+                                label: Center(
+                                  child: Text(
+                                    'معمل عملي (15 دقيقة)',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: _lectureType == 'عملي' ? Colors.black : null,
+                                    ),
+                                  ),
+                                ),
+                                selectedColor: accent,
+                                selected: _lectureType == 'عملي',
+                                onSelected: (_) => setState(() => _lectureType = 'عملي'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (_lectureType == 'نظري') ...[
+                          const SizedBox(height: 10),
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: (theoryWin['inWindow'] == true ? Colors.green : Colors.orange).withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: theoryWin['inWindow'] == true ? Colors.green : Colors.orange),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '⏱️ نافذة التحضير التلقائية للمقرر: (${theoryWin['windowLabel']})',
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 2),
+                                const Text(
+                                  'تبدأ بعد مرور نصف ساعة من بداية المحاضرة وتنتهي قبل نهايتها بنصف ساعة.',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey),
+                                ),
+                                if (theoryWin['inWindow'] != true)
+                                  SwitchListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: const Text('تجاوز الوقت (فتح استثنائي للمحاضرة الآن)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                    value: _overrideTheoryWindow,
+                                    onChanged: (v) => setState(() => _overrideTheoryWindow = v),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ] else ...[
+                          const SizedBox(height: 12),
+                          const Text('تحديد مجموعة العملي (بدء اختياري لمدة 15 دقيقة):', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: _practicalGroups.map((grp) {
+                              final sel = _selectedGroup == grp;
+                              return Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 3),
+                                  child: ChoiceChip(
+                                    selectedColor: accent,
+                                    label: Center(
+                                      child: Text(
+                                        grp,
+                                        style: TextStyle(
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.bold,
+                                          color: sel ? Colors.black : null,
                                         ),
                                       ),
-                                      selected: sel,
-                                      onSelected: (_) => setState(() => _selectedGroup = grp),
                                     ),
+                                    selected: sel,
+                                    onSelected: (_) => setState(() => _selectedGroup = grp),
                                   ),
-                                );
-                              }).toList(),
-                            ),
-                          ],
-                          if (_fullSessionLabel.isNotEmpty) ...[
-                            const SizedBox(height: 12),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: accent.withOpacity(0.12),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                'الكشف الموحد: $_fullSessionLabel',
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isDark ? accent : Colors.teal.shade800),
-                              ),
-                            ),
-                          ],
-                          const SizedBox(height: 16),
-                          SizedBox(
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ],
+                        if (_fullSessionLabel.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Container(
                             width: double.infinity,
-                            height: 48,
-                            child: ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
-                              icon: const Icon(Icons.radar_rounded),
-                              label: Text(
-                                _lectureType == 'عملي'
-                                    ? 'بدء تحضير المعمل الآن (15 دقيقة)'
-                                    : 'تشغيل رادار التحضير الموحد الآن',
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                              ),
-                              onPressed: _startRadar,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: accent.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              'الكشف الموحد: $_fullSessionLabel',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isDark ? accent : Colors.teal.shade800),
                             ),
                           ),
                         ],
-                      ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 48,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.black),
+                            icon: const Icon(Icons.radar_rounded),
+                            label: Text(
+                              _lectureType == 'عملي'
+                                  ? 'بدء تحضير المعمل الآن (15 دقيقة)'
+                                  : 'تشغيل رادار التحضير الموحد الآن',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                            ),
+                            onPressed: _startRadar,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
+            ),
       ),
     );
   }
@@ -1173,14 +1163,6 @@ class _AdminRadarScreenState extends State<AdminRadarScreen>
                 _fullSessionLabel,
                 style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
               ),
-              if (_radarStatusNote.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  _radarStatusNote,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.amberAccent, fontSize: 11),
-                ),
-              ],
               const Divider(color: Colors.white24, height: 20),
               if (_isPaused)
                 const Padding(
@@ -1632,6 +1614,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
       final code = _effectiveCourseCode;
       final grp = _lectureType == 'عملي' ? _selectedGroup : 'الكل';
 
+      // 1. البحث عن الجلسة النشطة المفتوحة حالياً من قبل المشرف/المندوب لهذه المادة
       final sessList = await Supabase.instance.client
           .from('attendance_sessions')
           .select()
@@ -1647,6 +1630,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
         latestSess = Map<String, dynamic>.from(sessList.first);
       }
 
+      // 2. التحقق هل تم تحضير الطالب في الجلسة النشطة أو في أحدث محاضرة مسجلة له في هذا المقرر
       Map<String, dynamic>? matchedRec;
       if (latestSess != null && (latestSess['session_code'] ?? '').toString().isNotEmpty) {
         final rec = await Supabase.instance.client
@@ -1689,13 +1673,109 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
     } catch (_) {}
   }
 
+  bool _autoRadarSubmitted = false;
+
+  Future<void> _autoConfirmViaRadarBeacon(String admPayload) async {
+    if (_autoRadarSubmitted || _verifiedRecord != null || _sessionPausedByAdmin) return;
+    _autoRadarSubmitted = true;
+
+    await _checkVerifiedAttendanceStatus();
+    if (!mounted || _verifiedRecord != null || _sessionPausedByAdmin) return;
+
+    String matchedSession = '';
+    String matchedLecNum = '';
+
+    // التحقق من الجلسة النشطة المفتوحة حالياً في القاعة
+    if (_activeSession != null &&
+        _activeSession!['is_active'] == true &&
+        (_activeSession!['session_code'] ?? '').toString().isNotEmpty) {
+      matchedSession = _activeSession!['session_code'].toString();
+      matchedLecNum = (_activeSession!['lecture_num'] ?? '1').toString();
+    } else if (admPayload.startsWith('ADM|')) {
+      final tokenStr = admPayload.substring(4).trim();
+      for (int i = 1; i <= 30; i++) {
+        final candidate = _buildSessionLabelForLec('$i');
+        final expectedToken = ((candidate.hashCode.abs() % 89999) + 10000).toString();
+        if (expectedToken == tokenStr) {
+          matchedSession = candidate;
+          matchedLecNum = '$i';
+          break;
+        }
+      }
+    }
+
+    if (matchedSession.isEmpty) {
+      _autoRadarSubmitted = false;
+      return;
+    }
+
+    try {
+      final existing = await Supabase.instance.client
+          .from('attendance')
+          .select()
+          .eq('student_id', widget.studentId)
+          .eq('session_code', matchedSession)
+          .maybeSingle();
+
+      Map<String, dynamic> savedRow;
+      if (existing != null) {
+        savedRow = await Supabase.instance.client
+            .from('attendance')
+            .update({
+              'status': 'present',
+              'lecture_num': matchedLecNum,
+              'recorded_by': 'رادار بلوتوث تلقائي 📡',
+            })
+            .eq('id', existing['id'])
+            .select()
+            .single();
+      } else {
+        savedRow = await Supabase.instance.client
+            .from('attendance')
+            .insert({
+              'student_id': widget.studentId,
+              'full_name': widget.studentName,
+              'session_code': matchedSession,
+              'course_code': _effectiveCourseCode,
+              'lecture_num': matchedLecNum,
+              'status': 'present',
+              'recorded_by': 'رادار بلوتوث تلقائي 📡',
+            })
+            .select()
+            .single();
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      final cachedList = jsonDecode(prefs.getString('cache_my_attendance') ?? '[]') as List<dynamic>;
+      cachedList.removeWhere((e) => (e['session_code'] ?? '') == matchedSession);
+      cachedList.insert(0, savedRow);
+      await prefs.setString('cache_my_attendance', jsonEncode(cachedList));
+
+      if (!mounted) return;
+      setState(() => _verifiedRecord = savedRow);
+      HapticFeedback.heavyImpact();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppPrefs.tr('📡 تم تحضيرك تلقائياً عبر رادار القاعة (محاضرة $matchedLecNum) ✓', '📡 Auto-checked in via Class Radar (Lecture $matchedLecNum) ✓')),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (_) {
+      _autoRadarSubmitted = false;
+    }
+  }
+
   Future<void> _startAutoBluetoothPresence() async {
     final btReady = await BleSafeHelper.prepareBluetooth(promptTurnOn: true);
     if (!btReady || !mounted) return;
 
     try {
       await FlutterBluePlus.stopScan();
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 20), continuousUpdates: true);
+      await FlutterBluePlus.startScan(
+        androidScanMode: AndroidScanMode.lowLatency,
+        continuousUpdates: true,
+        timeout: const Duration(seconds: 30),
+      );
       _scanSub?.cancel();
       _scanSub = FlutterBluePlus.scanResults.listen((results) {
         for (final r in results) {
@@ -1704,7 +1784,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
             final text = utf8.decode(raw, allowMalformed: true).trim();
             if (text.startsWith('ADM') && mounted) {
               setState(() => _radarNearby = true);
-              _checkVerifiedAttendanceStatus();
+              _autoConfirmViaRadarBeacon(text);
             }
           }
         }
@@ -1722,10 +1802,28 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
           manufacturerId: _attManufacturerId,
           manufacturerData: BleSafeHelper.safeAsciiBytes('S|${widget.studentId}', maxBytes: 16),
         );
-        await _peripheral.start(advertiseData: advData);
+        await _peripheral.start(
+          advertiseData: advData,
+          advertiseSettings: AdvertiseSettings(
+            advertiseMode: AdvertiseMode.advertiseModeLowLatency,
+            txPowerLevel: AdvertiseTxPower.advertiseTxPowerHigh,
+            connectable: false,
+          ),
+        );
         if (mounted) setState(() => _broadcasting = true);
       }
-    } catch (_) {}
+    } catch (_) {
+      try {
+        await _peripheral.start(
+          advertiseData: AdvertiseData(
+            includeDeviceName: false,
+            manufacturerId: _attManufacturerId,
+            manufacturerData: BleSafeHelper.safeAsciiBytes('S|${widget.studentId}', maxBytes: 16),
+          ),
+        );
+        if (mounted) setState(() => _broadcasting = true);
+      } catch (_) {}
+    }
   }
 
   Future<void> _submitPinAttendance() async {
@@ -1751,6 +1849,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
       return;
     }
 
+    // تحديد الجلسة ورقم المحاضرة تلقائياً من الجلسة النشطة للمشرف أو مطابقة الكود
     String matchedSession = '';
     String matchedLecNum = '';
 
@@ -1762,6 +1861,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
       }
     }
 
+    // في حال عدم توفر إنترنت لجلب الجلسة النشطة، نطابق الكود تلقائياً مع أرقام المحاضرات (1..30)
     if (matchedSession.isEmpty) {
       for (int i = 1; i <= 30; i++) {
         final candidate = _buildSessionLabelForLec('$i');
@@ -1821,6 +1921,7 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
             .single();
       }
 
+      // تحديث الذاكرة المحلية لسجل حضور الطالب ليظهر فوراً في "سجل حضوري"
       final prefs = await SharedPreferences.getInstance();
       final cachedList = jsonDecode(prefs.getString('cache_my_attendance') ?? '[]') as List<dynamic>;
       cachedList.removeWhere((e) => (e['session_code'] ?? '') == matchedSession);
@@ -1943,24 +2044,24 @@ class _StudentFastAttendanceSheetState extends State<StudentFastAttendanceSheet>
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: (_broadcasting || _radarNearby) ? Colors.teal.withOpacity(0.15) : Colors.orange.withOpacity(0.15),
+                color: _broadcasting ? Colors.teal.withOpacity(0.15) : Colors.orange.withOpacity(0.15),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: (_broadcasting || _radarNearby) ? Colors.teal : Colors.orange),
+                border: Border.all(color: _broadcasting ? Colors.teal : Colors.orange),
               ),
               child: Row(
                 children: [
                   Icon(
-                    (_broadcasting || _radarNearby) ? Icons.bluetooth_connected_rounded : Icons.bluetooth_disabled_rounded,
-                    color: (_broadcasting || _radarNearby) ? Colors.teal : Colors.orange,
+                    _broadcasting ? Icons.bluetooth_connected_rounded : Icons.bluetooth_disabled_rounded,
+                    color: _broadcasting ? Colors.teal : Colors.orange,
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       _radarNearby
-                          ? 'تم التقاط رادار المندوب داخل القاعة ✓ يمكنك التحضير بالكود أو QR فوراً.'
+                          ? 'تم التقاط رادار المندوب داخل القاعة ✓ (أنت ظاهر في القائمة الآن)'
                           : (_broadcasting
-                              ? 'إشارتك نشطة الآن بالبلوتوث؛ إذا لم يظهر اسمك تلقائياً أدخل الكود الرباعي بالأسفل.'
-                              : 'شغّل زر البلوتوث والموقع في هاتفك للالتقاط التلقائي، أو أدخل الكود الرباعي بالأسفل.'),
+                              ? 'إشارتك نشطة الآن بالبلوتوث، سيظهر اسمك في رادار المندوب تلقائياً.'
+                              : 'شغّل زر البلوتوث في هاتفك للالتقاط التلقائي، أو أدخل الكود الرباعي بالأسفل.'),
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
                     ),
                   ),
@@ -2161,7 +2262,7 @@ class _OfflineBluetoothChatScreenState extends State<OfflineBluetoothChatScreen>
         advertiseData: AdvertiseData(
           includeDeviceName: false,
           manufacturerId: _chatManufacturerId,
-          manufacturerData: BleSafeHelper.safeUtf8Bytes(packet, maxBytes: 20),
+          manufacturerData: BleSafeHelper.safeUtf8Bytes(packet, maxBytes: 22),
         ),
       );
     } catch (_) {}
